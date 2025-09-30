@@ -1,12 +1,8 @@
 // netlify/functions/carMatch.js
 
-// Optional: lock down the allowed origin via env var on Netlify (recommended).
-// In Netlify → Site settings → Environment variables, set ALLOWED_ORIGIN to your Webflow domain,
-// e.g. "https://your-site.webflow.io" or "https://cars.yourdomain.com".
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*"; // set to your Webflow domain in Netlify env for production
 
 export async function handler(event, context) {
-  // --- 1) CORS headers + preflight
   const corsHeaders = {
     "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
     "Vary": "Origin",
@@ -15,33 +11,22 @@ export async function handler(event, context) {
   };
 
   if (event.httpMethod === "OPTIONS") {
-    // Preflight: no body, just headers
     return { statusCode: 204, headers: corsHeaders, body: "" };
   }
 
   try {
-    // --- 2) Parse input safely
     let body;
     try {
       body = JSON.parse(event.body || "{}");
     } catch {
-      return {
-        statusCode: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Invalid JSON body" })
-      };
+      return json(400, { error: "Invalid JSON body" }, corsHeaders);
     }
 
     const answers = body.answers ?? null;
     if (!answers || (typeof answers !== "object" && !Array.isArray(answers))) {
-      return {
-        statusCode: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Missing or invalid `answers`" })
-      };
+      return json(400, { error: "Missing or invalid `answers`" }, corsHeaders);
     }
 
-    // --- 3) Build your original prompt (unchanged in spirit)
     const prompt = `
 You are a car recommendation engine.
 The user answered a quiz with: ${JSON.stringify(answers, null, 2)}.
@@ -57,7 +42,6 @@ Your task:
 ]
 `.trim();
 
-    // --- 4) Call OpenAI (same model you used)
     const resp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -65,7 +49,7 @@ Your task:
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "o4-mini",              // keep your model
+        model: "o4-mini",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.2,
         max_tokens: 500
@@ -73,18 +57,13 @@ Your task:
     });
 
     if (!resp.ok) {
-      const errTxt = await safeText(resp);
-      return {
-        statusCode: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Upstream model error", details: errTxt })
-      };
+      const details = await safeText(resp);
+      return json(502, { error: "Upstream model error", details }, corsHeaders);
     }
 
     const data = await resp.json();
     const text = data?.choices?.[0]?.message?.content || "";
 
-    // --- 5) Parse AI output as JSON (with your fallback approach)
     let parsed;
     try {
       parsed = JSON.parse(text);
@@ -93,11 +72,8 @@ Your task:
       parsed = match ? JSON.parse(match[0]) : [];
     }
 
-    // Normalize to exactly 3
-    if (!Array.isArray(parsed)) parsed = [];
-    parsed = parsed.filter(isValidCar).slice(0, 3);
+    parsed = Array.isArray(parsed) ? parsed.filter(isValidCar).slice(0, 3) : [];
 
-    // Fallback if needed (matches your original idea)
     if (parsed.length !== 3) {
       parsed = [
         { brand: "Tesla", model: "Model 3", reason: "Fallback: electric and modern" },
@@ -106,25 +82,13 @@ Your task:
       ];
     }
 
-    // --- 6) Success response with CORS
-    return {
-      statusCode: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify(parsed)
-    };
-
+    return json(200, parsed, corsHeaders);
   } catch (error) {
     console.error("Function error:", error);
-    // --- 7) Error response with CORS
-    return {
-      statusCode: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ error: error.message || "Server error" })
-    };
+    return json(500, { error: error.message || "Server error" }, corsHeaders);
   }
 }
 
-// Helpers
 function isValidCar(x) {
   return x && typeof x === "object"
     && typeof x.brand === "string" && x.brand.trim()
@@ -132,7 +96,14 @@ function isValidCar(x) {
     && typeof x.reason === "string" && x.reason.trim();
 }
 
+function json(statusCode, payload, headers) {
+  return {
+    statusCode,
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(payload)
+  };
+}
+
 async function safeText(res) {
   try { return await res.text(); } catch { return ""; }
 }
-
