@@ -1,80 +1,108 @@
 // netlify/functions/carMatch.js
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
 
-export async function handler(event) {
-  const corsHeaders = {
-    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+const ORIGINS = (process.env.ALLOWED_ORIGIN || "*")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+function makeCorsHeaders(origin) {
+  const allow = ORIGINS.includes(origin) || ORIGINS.includes("*") ? (origin || "*") : ORIGINS[0] || "*";
+  return {
+    "Access-Control-Allow-Origin": allow,
     "Vary": "Origin",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Content-Type": "application/json"
   };
+}
 
+export async function handler(event) {
+  const headers = makeCorsHeaders(event.headers?.origin || "");
   if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers: corsHeaders, body: "" };
+    return { statusCode: 204, headers, body: "" };
   }
+
+  // ---- MOCK MODE (to verify wiring without OpenAI) ----
+  const url = new URL(event.rawUrl || `http://x${event.path}`);
+  const mockRequested = url.searchParams.get("mock") === "1";
+  const missingKey = !process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.trim();
 
   try {
     let body;
     try { body = JSON.parse(event.body || "{}"); }
-    catch { return json(400, { error: "Invalid JSON body" }, corsHeaders); }
+    catch { return json(400, { error: "Invalid JSON body" }, headers); }
 
     const answers = body.answers ?? null;
     if (!answers || (typeof answers !== "object" && !Array.isArray(answers))) {
-      return json(400, { error: "Missing or invalid `answers`" }, corsHeaders);
+      return json(400, { error: "Missing or invalid `answers`" }, headers);
     }
 
+    if (mockRequested || missingKey) {
+      // Return static picks so we can test the client redirect/render
+      const picks = [
+        { brand: "Tesla",  model: "Model 3", reason: "Electric sedan with great tech" },
+        { brand: "Toyota", model: "RAV4",    reason: "Reliable compact SUV for families" },
+        { brand: "BMW",    model: "X1",      reason: "Premium feel in a small SUV" }
+      ];
+      return json(200, picks, headers);
+    }
+
+    // ---------- REAL OPENAI CALL ----------
     const prompt = `
 You are a car recommendation engine.
 The user answered a quiz with: ${JSON.stringify(answers, null, 2)}.
-
-Your task:
-- Suggest exactly 3 cars.
-- For each car, return: brand, model, and reason (1 short sentence).
-- Return ONLY valid JSON as an array.
+Return exactly 3 items as pure JSON array of:
+{"brand": "...", "model": "...", "reason": "..."}
 `.trim();
 
-    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        // If "o4-mini" isn't enabled on your account, switch to "gpt-4o-mini"
-        model: "o4-mini",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.2,
-        max_tokens: 500
-      })
-    });
+    // Try preferred model, fall back if not available
+    const modelCandidates = ["o4-mini", "gpt-4o-mini"];
+    let data, lastErrText = "";
 
-    if (!resp.ok) {
-      const details = await safeText(resp);
-      return json(502, { error: "Upstream model error", details }, corsHeaders);
+    for (const mdl of modelCandidates) {
+      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: mdl,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.2,
+          max_tokens: 500
+        })
+      });
+
+      if (resp.ok) { data = await resp.json(); break; }
+      lastErrText = await safeText(resp);
     }
 
-    const data = await resp.json();
-    const text = data?.choices?.[0]?.message?.content || "";
+    if (!data) {
+      return json(502, { error: "Upstream model error", details: lastErrText }, headers);
+    }
 
-    let parsed;
-    try { parsed = JSON.parse(text); }
+    const text = data?.choices?.[0]?.message?.content || "";
+    let picks;
+    try { picks = JSON.parse(text); }
     catch {
       const match = text.match(/\[.*\]/s);
-      parsed = match ? JSON.parse(match[0]) : [];
+      picks = match ? JSON.parse(match[0]) : [];
     }
 
-    parsed = Array.isArray(parsed) ? parsed.filter(isValidCar).slice(0, 3) : [];
-    if (parsed.length !== 3) {
-      parsed = [
+    picks = Array.isArray(picks) ? picks.filter(isValidCar).slice(0, 3) : [];
+    if (picks.length !== 3) {
+      picks = [
         { brand: "Tesla", model: "Model 3", reason: "Fallback: electric and modern" },
-        { brand: "BMW", model: "X5", reason: "Fallback: luxury family SUV" },
-        { brand: "Toyota", model: "Corolla", reason: "Fallback: affordable and reliable" }
+        { brand: "Toyota", model: "Corolla", reason: "Fallback: reliable and economical" },
+        { brand: "BMW", model: "X5", reason: "Fallback: luxury family SUV" }
       ];
     }
 
-    return json(200, parsed, corsHeaders);
+    return json(200, picks, headers);
   } catch (err) {
-    return json(500, { error: err.message || "Server error" }, corsHeaders);
+    console.error("Function error:", err);
+    return json(500, { error: err.message || "Server error" }, headers);
   }
 }
 
@@ -84,12 +112,7 @@ function isValidCar(x) {
     && typeof x.model === "string" && x.model.trim()
     && typeof x.reason === "string" && x.reason.trim();
 }
-
-function json(statusCode, payload, headers) {
-  return {
-    statusCode,
-    headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify(payload)
-  };
+function json(status, payload, headers) {
+  return { statusCode: status, headers, body: JSON.stringify(payload) };
 }
 async function safeText(res) { try { return await res.text(); } catch { return ""; } }
