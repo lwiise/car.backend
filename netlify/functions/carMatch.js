@@ -1,7 +1,7 @@
 // netlify/functions/carMatch.js
 
 // Allow one or more origins via env var ALLOWED_ORIGIN (comma-separated).
-// For you we default to your Webflow domain if not set.
+// Defaults to your Webflow domain if not set.
 const ORIGINS = (process.env.ALLOWED_ORIGIN || "https://scopeonride.webflow.io")
   .split(",")
   .map(s => s.trim())
@@ -27,22 +27,21 @@ export async function handler(event) {
   }
 
   try {
-    // Parse
+    // Parse request
     let body;
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return json(400, { error: "Invalid JSON body" }, headers); }
+    try {
+      body = JSON.parse(event.body || "{}");
+    } catch {
+      return json(400, { error: "Invalid JSON body" }, headers);
+    }
 
     const answers = body.answers ?? null;
     if (!answers || (typeof answers !== "object" && !Array.isArray(answers))) {
       return json(400, { error: "Missing or invalid `answers`" }, headers);
     }
 
-    // ---- MOCK MODE (works even without OPENAI_API_KEY) ----
-    const url = new URL(event.rawUrl || `http://x${event.path}`);
-    const mockRequested = url.searchParams.get("mock") === "1";
-    const missingKey = !process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.trim();
-
-    if (mockRequested || missingKey) {
+    // If no API key is set, return a static recommendation (safe fallback).
+    if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.trim()) {
       const picks = [
         { brand: "Tesla",  model: "Model 3", reason: "Electric sedan with great tech" },
         { brand: "Toyota", model: "RAV4",    reason: "Reliable compact SUV for families" },
@@ -51,20 +50,24 @@ export async function handler(event) {
       return json(200, picks, headers);
     }
 
-    // ---- REAL OPENAI CALL ----
+    // Build prompt
     const prompt = `
 You are a car recommendation engine.
-The user answered a quiz with: ${JSON.stringify(answers, null, 2)}.
+You will get quiz answers in a JSON object. Choose exactly 3 cars.
+Return ONLY JSON: an array of 3 items with keys: brand, model, reason (short).
 
-Return exactly 3 items as pure JSON array like:
+Answers:
+${JSON.stringify(answers, null, 2)}
+
+Respond like:
 [
+  {"brand":"Toyota","model":"Corolla","reason":"..."},
   {"brand":"Tesla","model":"Model 3","reason":"..."},
-  {"brand":"Toyota","model":"RAV4","reason":"..."},
   {"brand":"BMW","model":"X1","reason":"..."}
 ]
 `.trim();
 
-    // Try preferred model then fallback if your account doesn’t have it
+    // Try preferred then fallback model
     const models = ["o4-mini", "gpt-4o-mini"];
     let data = null, lastErr = "";
 
@@ -82,6 +85,7 @@ Return exactly 3 items as pure JSON array like:
           max_tokens: 500
         })
       });
+
       if (resp.ok) { data = await resp.json(); break; }
       lastErr = await safeText(resp);
     }
@@ -91,13 +95,17 @@ Return exactly 3 items as pure JSON array like:
     }
 
     const text = data?.choices?.[0]?.message?.content || "";
+
+    // Parse assistant JSON
     let picks;
-    try { picks = JSON.parse(text); }
-    catch {
+    try {
+      picks = JSON.parse(text);
+    } catch {
       const match = text.match(/\[.*\]/s);
       picks = match ? JSON.parse(match[0]) : [];
     }
 
+    // Validate + fallback
     picks = Array.isArray(picks) ? picks.filter(isValidCar).slice(0, 3) : [];
     if (picks.length !== 3) {
       picks = [
@@ -114,15 +122,14 @@ Return exactly 3 items as pure JSON array like:
   }
 }
 
+// helpers
 function isValidCar(x) {
   return x && typeof x === "object"
     && typeof x.brand === "string" && x.brand.trim()
     && typeof x.model === "string" && x.model.trim()
     && typeof x.reason === "string" && x.reason.trim();
 }
-
 function json(status, payload, headers) {
   return { statusCode: status, headers, body: JSON.stringify(payload) };
 }
-
 async function safeText(res) { try { return await res.text(); } catch { return ""; } }
