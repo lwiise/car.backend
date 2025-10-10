@@ -1,135 +1,85 @@
 // netlify/functions/carMatch.js
-
-// Allow one or more origins via env var ALLOWED_ORIGIN (comma-separated).
-// Defaults to your Webflow domain if not set.
-const ORIGINS = (process.env.ALLOWED_ORIGIN || "https://scopeonride.webflow.io")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
-
-function corsHeaders(origin) {
-  const allow = ORIGINS.includes(origin) ? origin : ORIGINS[0] || "*";
-  return {
-    "Access-Control-Allow-Origin": allow,
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Content-Type": "application/json"
-  };
-}
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*", // for production, set to your Webflow domains
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
+};
 
 export async function handler(event) {
-  const headers = corsHeaders(event.headers?.origin || "");
-
   // Preflight
   if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers, body: "" };
+    return { statusCode: 200, headers: CORS_HEADERS, body: "ok" };
   }
 
   try {
-    // Parse request
-    let body;
-    try {
-      body = JSON.parse(event.body || "{}");
-    } catch {
-      return json(400, { error: "Invalid JSON body" }, headers);
-    }
+    const isMock = (event.queryStringParameters && event.queryStringParameters.mock) === "1";
+    const body = event.body ? JSON.parse(event.body) : {};
+    const answers = body.answers || {};
 
-    const answers = body.answers ?? null;
-    if (!answers || (typeof answers !== "object" && !Array.isArray(answers))) {
-      return json(400, { error: "Missing or invalid `answers`" }, headers);
-    }
-
-    // If no API key is set, return a static recommendation (safe fallback).
-    if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.trim()) {
-      const picks = [
-        { brand: "Tesla",  model: "Model 3", reason: "Electric sedan with great tech" },
-        { brand: "Toyota", model: "RAV4",    reason: "Reliable compact SUV for families" },
-        { brand: "BMW",    model: "X1",      reason: "Premium feel in a small SUV" }
+    // Quick mock path for reliability testing
+    if (isMock) {
+      const mock = [
+        { brand: "Tesla", model: "Model 3", reason: "Modern EV with great range" },
+        { brand: "Toyota", model: "Corolla", reason: "Reliable and affordable" },
+        { brand: "BMW", model: "X3", reason: "Premium compact SUV" }
       ];
-      return json(200, picks, headers);
+      return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(mock) };
     }
 
-    // Build prompt
+    // === LIVE AI CALL ===
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not configured");
+
     const prompt = `
 You are a car recommendation engine.
-You will get quiz answers in a JSON object. Choose exactly 3 cars.
-Return ONLY JSON: an array of 3 items with keys: brand, model, reason (short).
+The user answered a quiz with: ${JSON.stringify(answers, null, 2)}.
 
-Answers:
-${JSON.stringify(answers, null, 2)}
-
-Respond like:
+Your task:
+- Suggest exactly 3 cars.
+- For each car, return: brand, model, and reason (1 short sentence).
+- Return ONLY valid JSON as an array. Example:
 [
-  {"brand":"Toyota","model":"Corolla","reason":"..."},
-  {"brand":"Tesla","model":"Model 3","reason":"..."},
-  {"brand":"BMW","model":"X1","reason":"..."}
+  {"brand":"Tesla","model":"Model 3","reason":"Affordable entry-level electric car"},
+  {"brand":"BMW","model":"X5","reason":"Luxury SUV with family space"},
+  {"brand":"Toyota","model":"Corolla","reason":"Reliable and economical"}
 ]
-`.trim();
+    `;
 
-    // Try preferred then fallback model
-    const models = ["o4-mini", "gpt-4o-mini"];
-    let data = null, lastErr = "";
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "o4-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+        max_tokens: 500
+      })
+    });
 
-    for (const model of models) {
-      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.2,
-          max_tokens: 500
-        })
-      });
-
-      if (resp.ok) { data = await resp.json(); break; }
-      lastErr = await safeText(resp);
-    }
-
-    if (!data) {
-      return json(502, { error: "Upstream model error", details: lastErr }, headers);
-    }
-
+    const data = await res.json();
     const text = data?.choices?.[0]?.message?.content || "";
 
-    // Parse assistant JSON
-    let picks;
-    try {
-      picks = JSON.parse(text);
-    } catch {
-      const match = text.match(/\[.*\]/s);
-      picks = match ? JSON.parse(match[0]) : [];
+    let parsed;
+    try { parsed = JSON.parse(text); }
+    catch {
+      const match = text.match(/\[[\s\S]*\]/);
+      parsed = match ? JSON.parse(match[0]) : null;
     }
 
-    // Validate + fallback
-    picks = Array.isArray(picks) ? picks.filter(isValidCar).slice(0, 3) : [];
-    if (picks.length !== 3) {
-      picks = [
+    if (!Array.isArray(parsed) || parsed.length !== 3) {
+      parsed = [
         { brand: "Tesla", model: "Model 3", reason: "Fallback: electric and modern" },
-        { brand: "Toyota", model: "Corolla", reason: "Fallback: reliable and economical" },
-        { brand: "BMW", model: "X5", reason: "Fallback: luxury family SUV" }
+        { brand: "BMW", model: "X5", reason: "Fallback: luxury family SUV" },
+        { brand: "Toyota", model: "Corolla", reason: "Fallback: affordable and reliable" }
       ];
     }
 
-    return json(200, picks, headers);
+    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(parsed) };
   } catch (err) {
-    console.error("Function error:", err);
-    return json(500, { error: err.message || "Server error" }, headers);
+    console.error("carMatch error:", err);
+    return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: String(err.message || err) }) };
   }
 }
-
-// helpers
-function isValidCar(x) {
-  return x && typeof x === "object"
-    && typeof x.brand === "string" && x.brand.trim()
-    && typeof x.model === "string" && x.model.trim()
-    && typeof x.reason === "string" && x.reason.trim();
-}
-function json(status, payload, headers) {
-  return { statusCode: status, headers, body: JSON.stringify(payload) };
-}
-async function safeText(res) { try { return await res.text(); } catch { return ""; } }
