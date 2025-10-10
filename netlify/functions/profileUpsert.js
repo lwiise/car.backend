@@ -1,45 +1,59 @@
-import { supabaseAdmin, getAccessToken } from "./_supabase.js";
+// netlify/functions/profileUpsert.js
+import { createClient } from "@supabase/supabase-js";
 
-const CORS_ORIGIN = "https://YOUR-WEBFLOW-ORIGIN"; // e.g. https://your-site.webflow.io
-const headers = {
-  "Content-Type": "application/json",
-  "Access-Control-Allow-Origin": CORS_ORIGIN,      // 👈 set this to your Webflow origin (or "*" to test)
-  "Access-Control-Allow-Methods": "OPTIONS, POST",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization"
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*", // lock to your domains in prod
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
 
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY; // server-side secret
+
 export async function handler(event) {
-  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers, body: "{}" };
-  }
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, headers, body: JSON.stringify({ error: "Method Not Allowed" }) };
+    return { statusCode: 200, headers: CORS_HEADERS, body: "ok" };
   }
 
   try {
-    const token = getAccessToken(event);
-    if (!token) return { statusCode: 401, headers, body: JSON.stringify({ error: "No token" }) };
+    if (!SUPABASE_URL || !SUPABASE_SERVICE) throw new Error("Supabase env not configured");
 
-    const { name, nickname, dob, gender, country, state, email } =
-      JSON.parse(event.body || "{}");
+    const authHeader = event.headers?.authorization || event.headers?.Authorization;
+    if (!authHeader?.startsWith("Bearer ")) throw new Error("Missing bearer token");
+    const userToken = authHeader.slice("Bearer ".length);
 
-    const supabase = supabaseAdmin(token);
+    const body = event.body ? JSON.parse(event.body) : {};
+    const { email, name, nickname, dob, gender, country, state } = body;
 
-    const { data: userData, error: userErr } = await supabase.auth.getUser(token);
-    if (userErr || !userData?.user) {
-      return { statusCode: 401, headers, body: JSON.stringify({ error: "Invalid token" }) };
-    }
-    const uid = userData.user.id;
+    // Verify user token and fetch user id securely
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE, {
+      global: { headers: { Authorization: `Bearer ${userToken}` } }
+    });
 
-    const { error: upErr } = await supabase
-      .from("users")
-      .upsert({ id: uid, email, name, nickname, dob, gender, country, state }, { onConflict: "id" });
+    const { data: userData, error: userErr } = await admin.auth.getUser(userToken);
+    if (userErr || !userData?.user) throw new Error("Invalid user session");
+    const user = userData.user;
+
+    // Upsert into profiles table (create it if not exists)
+    const { error: upErr } = await admin
+      .from("profiles")
+      .upsert({
+        id: user.id,
+        email: email || user.email,
+        name: name || null,
+        nickname: nickname || null,
+        dob: dob || null,
+        gender: gender || null,
+        country: country || null,
+        state: state || null,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "id" });
 
     if (upErr) throw upErr;
 
-    return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
-  } catch (e) {
-    return { statusCode: 500, headers, body: JSON.stringify({ error: String(e) }) };
+    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ ok: true }) };
+  } catch (err) {
+    console.error("profileUpsert error:", err);
+    return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: String(err.message || err) }) };
   }
 }
