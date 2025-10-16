@@ -1,73 +1,72 @@
-// netlify/functions/adminListResults.js
-import { serverClient, okJSON, errorJSON, corsHeaders, requireAdminEmail, readPager } from './_supabase.js';
+// List quiz results for Admin – classic Netlify handler
+import { createClient } from '@supabase/supabase-js';
 
-export default async function handler(req) {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders() });
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+const CORS = {
+  'Access-Control-Allow-Origin': 'https://scopeonride.webflow.io',
+  'Vary': 'Origin',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Max-Age': '86400'
+};
+
+export async function handler(event) {
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 204, headers: CORS, body: '' };
+  }
 
   try {
-    const { limit, offset, mock } = readPager(req.url);
-
-    // mock mode for quick UI tests
-    if (mock) {
-      const now = Date.now();
-      return okJSON({
-        items: Array.from({ length: Math.min(6, limit) }).map((_, i) => ({
-          id: `mock-res-${offset + i + 1}`,
-          created_at: new Date(now - i * 3600_000).toISOString(),
-          user_id: `mock-user-${offset + i + 1}`,
-          user_email: `person${offset + i + 1}@example.com`,
-          answers: { q1: 'Personal', q2: 'Monthly', _meta: { ua: 'mock' } },
-          top3: [
-            { brand: 'Tesla', model: 'Model 3', image: '', reason: 'electric and modern' },
-            { brand: 'BMW', model: 'X5', image: '', reason: 'luxury family SUV' },
-            { brand: 'Toyota', model: 'Corolla', image: '', reason: 'reliable and affordable' },
-          ],
-        })),
-      });
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error('Missing Supabase env vars');
     }
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    const email = requireAdminEmail(req);
-    const supabase = serverClient();
+    const url = new URL(event.rawUrl || `http://x${event.path}${event.rawQuery ? '?' + event.rawQuery : ''}`);
+    const limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') || '20', 10)));
+    const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10));
+    const from = offset;
+    const to = offset + limit - 1;
 
-    // 1) fetch results
-    const { data: results, error } = await supabase
+    // We’ll join profiles.email so the admin table can show who the result belongs to
+    const { data, error, count } = await admin
       .from('results')
-      .select('id,created_at,user_id,answers,top3')
+      .select(`
+        id,
+        user_id,
+        created_at,
+        answers,
+        top3,
+        profiles!inner(id,email,name)
+      `, { count: 'exact' })
       .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+      .range(from, to);
 
     if (error) throw error;
 
-    if (!results || results.length === 0) {
-      return okJSON({ items: [], meta: { admin: email } });
-    }
-
-    // 2) fetch emails for those users (simple 2-step join)
-    const userIds = [...new Set(results.map(r => r.user_id).filter(Boolean))];
-    let emailById = {};
-    if (userIds.length) {
-      const { data: profs, error: pErr } = await supabase
-        .from('profiles')
-        .select('id,email')
-        .in('id', userIds);
-      if (pErr) throw pErr;
-      emailById = Object.fromEntries((profs || []).map(p => [p.id, p.email]));
-    }
-
-    const items = results.map(r => ({
-      ...r,
-      user_email: emailById[r.user_id] || null,
+    // Flatten a bit for the UI
+    const items = (data || []).map(r => ({
+      id: r.id,
+      user_id: r.user_id,
+      created_at: r.created_at,
+      answers: r.answers,
+      top3: r.top3,
+      email: r.profiles?.email || null,
+      name: r.profiles?.name || null
     }));
 
-    return okJSON({ items, meta: { admin: email } });
+    return {
+      statusCode: 200,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, count: count ?? items.length })
+    };
   } catch (err) {
-    if (err?.message === 'NO_ADMIN_EMAIL_HEADER')
-      return errorJSON(401, 'Missing x-admin-email header');
-    if (err?.message === 'NOT_ALLOWED')
-      return errorJSON(403, 'This email is not allowed to access the admin API');
-
-    return errorJSON(500, 'adminListResults failed', String(err?.message || err));
+    console.error('adminListResults error:', err);
+    return {
+      statusCode: 500,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: String(err.message || err) })
+    };
   }
 }
-
-export const config = { path: '/.netlify/functions/adminListResults' };
