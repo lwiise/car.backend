@@ -1,68 +1,56 @@
 // netlify/functions/adminListResults.js
-const { createClient } = require("@supabase/supabase-js");
+import { createClient } from '@supabase/supabase-js';
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*", // tighten later
-  "Access-Control-Allow-Headers": "Content-Type, X-Admin-Email",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET,OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Email',
 };
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
-exports.handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: CORS, body: "ok" };
+export default async (req, context) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: cors });
   }
 
   try {
-    const adminEmail = (event.headers["x-admin-email"] || "").toLowerCase();
-    // if (ADMIN_EMAILS.length && !ADMIN_EMAILS.includes(adminEmail)) {
-    //   return { statusCode: 401, headers: CORS, body: JSON.stringify({ error: "unauthorized" }) };
-    // }
+    const adminEmail = req.headers.get('x-admin-email') || '';
+    if (!adminEmail) {
+      return Response.json({ error: 'missing admin email' }, { status: 401, headers: cors });
+    }
 
-    const limit = Math.max(1, Math.min(100, Number(event.queryStringParameters?.limit || 20)));
-    const offset = Math.max(0, Number(event.queryStringParameters?.offset || 0));
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE
+    );
 
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE);
+    const url = new URL(req.url);
+    const limit = Number(url.searchParams.get('limit') || 50);
+    const offset = Number(url.searchParams.get('offset') || 0);
 
-    // 1) page results
-    const { data: results, error: rErr } = await sb
-      .from("results")
-      .select("id, user_id, created_at, top3, answers")
-      .order("created_at", { ascending: false })
+    // Grab recent results
+    const { data: results, error: rErr } = await supabase
+      .from('results')
+      .select('id, user_id, created_at, answers, top3')
+      .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (rErr) throw rErr;
 
-    // 2) attach user emails
-    const userIds = Array.from(new Set(results.map((r) => r.user_id)));
-    let emailMap = new Map();
+    // Attach user emails to each result for easier reading
+    const userIds = [...new Set(results.map(r => r.user_id).filter(Boolean))];
+    let emailById = {};
     if (userIds.length) {
-      const { data: profs, error: pErr } = await sb
-        .from("profiles")
-        .select("id, email")
-        .in("id", userIds);
-      if (pErr) throw pErr;
-      for (const p of profs) emailMap.set(p.id, p.email);
+      const { data: users, error: uErr } = await supabase
+        .from('profiles')
+        .select('id, email')
+        .in('id', userIds);
+      if (uErr) throw uErr;
+      for (const u of users) emailById[u.id] = u.email;
     }
 
-    const items = results.map((r) => ({
-      ...r,
-      email: emailMap.get(r.user_id) || null,
-    }));
-
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ items }) };
+    const items = results.map(r => ({ ...r, email: emailById[r.user_id] || null }));
+    return Response.json({ items, limit, offset }, { headers: cors });
   } catch (err) {
-    console.error("adminListResults error:", err);
-    return {
-      statusCode: 500,
-      headers: CORS,
-      body: JSON.stringify({ error: String(err.message || err) }),
-    };
+    return Response.json({ error: String(err?.message || err) }, { status: 500, headers: cors });
   }
-};
+}
