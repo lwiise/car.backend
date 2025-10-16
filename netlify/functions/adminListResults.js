@@ -1,3 +1,27 @@
+
+// Simple email allow-list guard
+const ALLOW = (process.env.ADMIN_EMAILS || "")
+  .toLowerCase()
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+function requireAdmin(event) {
+  const email = (event.headers["x-admin-email"] || "").toLowerCase();
+  if (!email || (ALLOW.length && !ALLOW.includes(email))) {
+    return { statusCode: 403, body: "Forbidden" };
+  }
+  return null; // ok
+}
+
+// Inside your handler:
+exports.handler = async (event) => {
+  const guard = requireAdmin(event);
+  if (guard) return guard;
+
+  // ... existing code to list users/results ...
+};
+
 // netlify/functions/adminListResults.js
 const { createClient } = require('@supabase/supabase-js');
 
