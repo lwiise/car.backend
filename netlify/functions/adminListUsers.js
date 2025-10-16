@@ -1,80 +1,70 @@
 // netlify/functions/adminListUsers.js
-const { createClient } = require("@supabase/supabase-js");
+import { createClient } from '@supabase/supabase-js';
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*", // tighten later to your Webflow domain
-  "Access-Control-Allow-Headers": "Content-Type, X-Admin-Email",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+// --- CORS helper (Webflow -> Netlify) ---
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET,OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Email',
 };
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-// optional allow-list: comma-separated emails in env ADMIN_EMAILS
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
-exports.handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: CORS, body: "ok" };
+export default async (req, context) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: cors });
   }
 
   try {
-    // --- “login by email only”: allow-all for now (no hard block)
-    // If you want to enforce, uncomment the 4 lines below.
-    const adminEmail = (event.headers["x-admin-email"] || "").toLowerCase();
-    // if (ADMIN_EMAILS.length && !ADMIN_EMAILS.includes(adminEmail)) {
-    //   return { statusCode: 401, headers: CORS, body: JSON.stringify({ error: "unauthorized" }) };
-    // }
+    // Minimal “login” — page sends X-Admin-Email (already implemented in the UI)
+    const adminEmail = req.headers.get('x-admin-email') || '';
+    if (!adminEmail) {
+      return Response.json({ error: 'missing admin email' }, { status: 401, headers: cors });
+    }
 
-    const limit = Math.max(1, Math.min(100, Number(event.queryStringParameters?.limit || 20)));
-    const offset = Math.max(0, Number(event.queryStringParameters?.offset || 0));
+    // Use SERVICE ROLE to bypass RLS for admin views
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE
+    );
 
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE);
+    // Pagination (defaults)
+    const url = new URL(req.url);
+    const limit = Number(url.searchParams.get('limit') || 25);
+    const offset = Number(url.searchParams.get('offset') || 0);
 
-    // 1) page through profiles
-    const { data: profiles, error: pErr } = await sb
-      .from("profiles")
-      .select(
-        "id, email, name, nickname, dob, gender, country, state, created_at, updated_at"
-      )
-      .order("created_at", { ascending: false })
+    // Pull basic profile info
+    // Adjust table/column names if yours differ
+    const { data: profiles, error: pErr } = await supabase
+      .from('profiles')
+      .select('id, email, name, nickname, gender, dob, country, state, created_at')
+      .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (pErr) throw pErr;
 
-    const ids = profiles.map((p) => p.id);
-    let latestMap = new Map();
-
-    if (ids.length) {
-      // 2) get latest result per user (single batch, then reduce)
-      const { data: results, error: rErr } = await sb
-        .from("results")
-        .select("id, user_id, created_at, top3, answers")
-        .in("user_id", ids)
-        .order("created_at", { ascending: false });
+    // Fetch latest result per user in one go, then map
+    const userIds = profiles.map(p => p.id);
+    let latestByUser = {};
+    if (userIds.length) {
+      const { data: results, error: rErr } = await supabase
+        .from('results')
+        .select('id, user_id, created_at, answers, top3')
+        .in('user_id', userIds)
+        .order('created_at', { ascending: false });
 
       if (rErr) throw rErr;
 
-      for (const row of results) {
-        if (!latestMap.has(row.user_id)) latestMap.set(row.user_id, row);
+      for (const r of results) {
+        if (!latestByUser[r.user_id]) latestByUser[r.user_id] = r; // first seen is latest due to order
       }
     }
 
-    const items = profiles.map((p) => ({
-      ...p,
-      latest_result: latestMap.get(p.id) || null,
+    const items = profiles.map(p => ({
+      profile: p,
+      latest_result: latestByUser[p.id] || null,
     }));
 
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ items }) };
+    return Response.json({ items, limit, offset }, { headers: cors });
   } catch (err) {
-    console.error("adminListUsers error:", err);
-    return {
-      statusCode: 500,
-      headers: CORS,
-      body: JSON.stringify({ error: String(err.message || err) }),
-    };
+    return Response.json({ error: String(err?.message || err) }, { status: 500, headers: cors });
   }
-};
+}
