@@ -1,13 +1,17 @@
-// netlify/functions/adminListUsers.js
-import { serverClient, okJSON, errorJSON, corsHeaders, requireAdminEmail, readPager } from './_supabase.js';
+// netlify/functions/adminListUsers.js — Netlify Functions v1 (CommonJS)
+const {
+  serverClient, okJSON, errorJSON, corsHeaders, requireAdminEmail, readPager,
+} = require('./_supabase.js');
 
-export default async function handler(req) {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders() });
+exports.handler = async (event) => {
+  // CORS preflight
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 204, headers: corsHeaders(), body: '' };
+  }
 
   try {
-    const { limit, offset, mock } = readPager(req.url);
+    const { limit, offset, mock } = readPager(`https://x${event.rawUrl.slice(event.rawUrl.indexOf('://'))}`);
 
-    // mock mode for quick UI tests
     if (mock) {
       return okJSON({
         items: Array.from({ length: Math.min(5, limit) }).map((_, i) => ({
@@ -24,10 +28,10 @@ export default async function handler(req) {
       });
     }
 
-    const email = requireAdminEmail(req); // validates header
+    const adminEmail = requireAdminEmail(event);
     const supabase = serverClient();
 
-    // adjust column list if your schema differs
+    // Adjust columns/names if your schema differs
     const { data, error } = await supabase
       .from('profiles')
       .select('id,email,name,nickname,dob,gender,country,state,created_at')
@@ -35,9 +39,9 @@ export default async function handler(req) {
       .range(offset, offset + limit - 1);
 
     if (error) throw error;
-    return okJSON({ items: data || [], meta: { admin: email } });
+
+    return okJSON({ items: data || [], meta: { admin: adminEmail } });
   } catch (err) {
-    // map our validation errors to friendly codes
     if (err?.message === 'NO_ADMIN_EMAIL_HEADER')
       return errorJSON(401, 'Missing x-admin-email header');
     if (err?.message === 'NOT_ALLOWED')
@@ -45,6 +49,4 @@ export default async function handler(req) {
 
     return errorJSON(500, 'adminListUsers failed', String(err?.message || err));
   }
-}
-
-export const config = { path: '/.netlify/functions/adminListUsers' };
+};
