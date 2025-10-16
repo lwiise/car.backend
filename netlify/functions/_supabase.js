@@ -5,7 +5,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
 // Set your allowed origin (Webflow site)
-const ALLOW_ORIGIN = 'https://scopeonride.webflow.io'; // or '*' while testing
+const ALLOW_ORIGIN = '*'; // or '*' while testing
 
 function serverClient() {
   if (!SUPABASE_URL || !SERVICE_ROLE) {
