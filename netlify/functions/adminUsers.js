@@ -1,74 +1,74 @@
 // netlify/functions/adminUsers.js
-import { supaAdmin, ok, bad, handleOptions, requireAdmin } from './_supa.js';
+const { createClient } = require('@supabase/supabase-js');
 
-export async function handler(event) {
-  if (event.httpMethod === 'OPTIONS') return handleOptions();
-
-  const gate = requireAdmin(event);
-  if (!gate.ok) return bad(403, gate.reason);
-
-  const url = new URL(event.rawUrl || `https://x${event.path}${event.queryStringParameters ? '?' : ''}`);
-  const qs = Object.fromEntries(url.searchParams.entries());
-  const limit  = Math.min(parseInt(qs.limit || '20', 10), 100);
-  const offset = Math.max(parseInt(qs.offset || '0', 10), 0);
-  const search = (qs.search || '').trim();
-
+exports.handler = async (event) => {
   try {
-    const supa = supaAdmin();
-
-    let q = supa
-      .from('profiles')
-      .select('user_id, email, name, nickname, dob, gender, country, state, created_at', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (search) {
-      // very simple ilike filter (add more ORs if you want)
-      q = q.or([
-        `email.ilike.%${search}%`,
-        `name.ilike.%${search}%`,
-        `nickname.ilike.%${search}%`,
-        `country.ilike.%${search}%`,
-        `state.ilike.%${search}%`,
-      ].join(','));
+    const url = process.env.SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE; // service key (NOT anon)
+    if (!url || !serviceKey) {
+      return { statusCode: 500, body: JSON.stringify({ error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE' }) };
     }
 
-    const { data: profiles, error, count } = await q;
-    if (error) throw error;
+    const supabase = createClient(url, serviceKey, { auth: { persistSession: false } });
 
-    // fetch each user's latest result (optional, keeps UI nice)
-    const userIds = (profiles || []).map(p => p.user_id).filter(Boolean);
+    const qs = new URLSearchParams(event.queryStringParameters || {});
+    const limit  = Math.min(parseInt(qs.get('limit')  || '20', 10), 100);
+    const offset = Math.max(parseInt(qs.get('offset') || '0', 10), 0);
+    const search = (qs.get('search') || '').trim().toLowerCase(); // email search
+
+    let profQ = supabase
+      .from('profiles')
+      .select(`
+        id,
+        email,
+        name,
+        nickname,
+        dob,
+        gender,
+        country,
+        state
+      `, { count: 'exact' })
+      .order('email', { ascending: true })
+      .range(offset, offset + limit - 1);
+
+    if (search) profQ = profQ.ilike('email', `%${search}%`);
+
+    const { data: profiles, error: pErr, count } = await profQ;
+    if (pErr) throw pErr;
+
+    // Fetch latest result per user (optional but useful in list view)
+    const ids = (profiles || []).map(p => p.id);
     let latestByUser = {};
-    if (userIds.length) {
-      const { data: latest } = await supa
+    if (ids.length) {
+      const { data: results, error: rErr } = await supabase
         .from('results')
-        .select('id, user_id, created_at, top3')
-        .in('user_id', userIds)
+        .select('id, user_id, created_at')
+        .in('user_id', ids)
         .order('created_at', { ascending: false });
-      // keep only first per user (already sorted desc)
-      for (const r of latest || []) if (!latestByUser[r.user_id]) latestByUser[r.user_id] = r;
+      if (rErr) throw rErr;
+      for (const r of results || []) {
+        if (!latestByUser[r.user_id]) latestByUser[r.user_id] = r;
+      }
     }
 
     const items = (profiles || []).map(p => ({
-      user_id: p.user_id,
+      id: p.id,
       email: p.email,
-      name: p.name,
-      nickname: p.nickname,
-      dob: p.dob,
-      gender: p.gender,
-      country: p.country,
-      state: p.state,
-      created_at: p.created_at,
-      latest_result: latestByUser[p.user_id] ? {
-        id: latestByUser[p.user_id].id,
-        created_at: latestByUser[p.user_id].created_at,
-        top3: Array.isArray(latestByUser[p.user_id].top3) ? latestByUser[p.user_id].top3 : [],
-      } : null,
+      name: p.name || '',
+      nickname: p.nickname || '',
+      dob: p.dob || '',
+      gender: p.gender || '',
+      country: p.country || '',
+      state: p.state || '',
+      latest_result: latestByUser[p.id] || null
     }));
 
-    return ok({ items, total: count ?? items.length, limit, offset, search });
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ items, total: count ?? items.length })
+    };
   } catch (err) {
-    console.error('[adminUsers]', err);
-    return bad(500, err.message || 'Server error');
+    console.error('adminUsers error:', err);
+    return { statusCode: 500, body: JSON.stringify({ error: String(err.message || err) }) };
   }
-}
+};
