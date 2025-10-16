@@ -1,37 +1,50 @@
 // netlify/functions/adminListUsers.js
-import { adminClient, isAllowedAdmin, json, badRequest, forbidden, serverError } from './_supabase.js';
+import { serverClient, okJSON, errorJSON, corsHeaders, requireAdminEmail, readPager } from './_supabase.js';
 
-export const handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') return json({}, 200);
+export default async function handler(req) {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders() });
 
   try {
-    const adminEmail = event.headers['x-admin-email'] || event.headers['X-Admin-Email'];
-    if (!adminEmail) return badRequest('Missing x-admin-email header');
-    if (!isAllowedAdmin(adminEmail)) return forbidden('Not an allowed admin');
+    const { limit, offset, mock } = readPager(req.url);
 
-    const limit  = Math.min(parseInt(event.queryStringParameters?.limit ?? '20', 10) || 20, 100);
-    const offset = parseInt(event.queryStringParameters?.offset ?? '0', 10) || 0;
+    // mock mode for quick UI tests
+    if (mock) {
+      return okJSON({
+        items: Array.from({ length: Math.min(5, limit) }).map((_, i) => ({
+          id: `mock-user-${offset + i + 1}`,
+          email: `person${offset + i + 1}@example.com`,
+          name: `Person ${offset + i + 1}`,
+          nickname: `P${offset + i + 1}`,
+          dob: '1990-01-01',
+          gender: 'Male',
+          country: 'USA',
+          state: 'CA',
+          created_at: new Date(Date.now() - i * 86400000).toISOString(),
+        })),
+      });
+    }
 
-    const supa = adminClient();
+    const email = requireAdminEmail(req); // validates header
+    const supabase = serverClient();
 
-    // total count
-    const { count: total, error: countErr } = await supa
+    // adjust column list if your schema differs
+    const { data, error } = await supabase
       .from('profiles')
-      .select('*', { count: 'exact', head: true });
-    if (countErr) throw countErr;
-
-    // rows
-    const { data: items, error } = await supa
-      .from('profiles')
-      .select('id,email,name,nickname,dob,gender,country,state,created_at,updated_at')
+      .select('id,email,name,nickname,dob,gender,country,state,created_at')
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (error) throw error;
+    return okJSON({ items: data || [], meta: { admin: email } });
+  } catch (err) {
+    // map our validation errors to friendly codes
+    if (err?.message === 'NO_ADMIN_EMAIL_HEADER')
+      return errorJSON(401, 'Missing x-admin-email header');
+    if (err?.message === 'NOT_ALLOWED')
+      return errorJSON(403, 'This email is not allowed to access the admin API');
 
-    return json({ items, total, limit, offset });
-  } catch (e) {
-    console.error('adminListUsers error:', e);
-    return serverError(e.message);
+    return errorJSON(500, 'adminListUsers failed', String(err?.message || err));
   }
-};
+}
+
+export const config = { path: '/.netlify/functions/adminListUsers' };
