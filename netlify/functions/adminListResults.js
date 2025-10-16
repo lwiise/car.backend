@@ -1,4 +1,3 @@
-// List quiz results for Admin – classic Netlify handler
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -8,7 +7,8 @@ const CORS = {
   'Access-Control-Allow-Origin': 'https://scopeonride.webflow.io',
   'Vary': 'Origin',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, content-type',
+  // 👇 allow our custom header from the admin page
+  'Access-Control-Allow-Headers': 'authorization, content-type, x-admin-email',
   'Access-Control-Max-Age': '86400'
 };
 
@@ -29,7 +29,6 @@ export async function handler(event) {
     const from = offset;
     const to = offset + limit - 1;
 
-    // We’ll join profiles.email so the admin table can show who the result belongs to
     const { data, error, count } = await admin
       .from('results')
       .select(`
@@ -45,7 +44,6 @@ export async function handler(event) {
 
     if (error) throw error;
 
-    // Flatten a bit for the UI
     const items = (data || []).map(r => ({
       id: r.id,
       user_id: r.user_id,
