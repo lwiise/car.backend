@@ -1,71 +1,58 @@
-// netlify/functions/adminListResults.js — Netlify Functions v1 (CommonJS)
-const {
-  serverClient, okJSON, errorJSON, corsHeaders, requireAdminEmail, readPager,
-} = require('./_supabase.js');
+// List users (profiles) for Admin – classic Netlify handler
+import { createClient } from '@supabase/supabase-js';
 
-exports.handler = async (event) => {
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// allow Webflow origin + local/dev
+const CORS = {
+  'Access-Control-Allow-Origin': 'https://scopeonride.webflow.io',
+  'Vary': 'Origin',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'authorization, content-type',
+  'Access-Control-Max-Age': '86400'
+};
+
+export async function handler(event) {
   // CORS preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: corsHeaders(), body: '' };
+    return { statusCode: 204, headers: CORS, body: '' };
   }
 
   try {
-    const { limit, offset, mock } = readPager(`https://x${event.rawUrl.slice(event.rawUrl.indexOf('://'))}`);
-
-    if (mock) {
-      const now = Date.now();
-      return okJSON({
-        items: Array.from({ length: Math.min(6, limit) }).map((_, i) => ({
-          id: `mock-res-${offset + i + 1}`,
-          created_at: new Date(now - i * 3600_000).toISOString(),
-          user_id: `mock-user-${offset + i + 1}`,
-          user_email: `person${offset + i + 1}@example.com`,
-          answers: { q1: 'Personal', q2: 'Monthly', _meta: { ua: 'mock' } },
-          top3: [
-            { brand: 'Tesla', model: 'Model 3', image: '', reason: 'electric and modern' },
-            { brand: 'BMW', model: 'X5', image: '', reason: 'luxury family SUV' },
-            { brand: 'Toyota', model: 'Corolla', image: '', reason: 'reliable and affordable' },
-          ],
-        })),
-      });
+    // auth (admin email gating is done on the client; here we just require service key)
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error('Missing Supabase env vars');
     }
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    const adminEmail = requireAdminEmail(event);
-    const supabase = serverClient();
+    // paging
+    const url = new URL(event.rawUrl || `http://x${event.path}${event.rawQuery ? '?' + event.rawQuery : ''}`);
+    const limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') || '20', 10)));
+    const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10));
+    const from = offset;
+    const to = offset + limit - 1;
 
-    // 1) list results
-    const { data: results, error } = await supabase
-      .from('results')
-      .select('id,created_at,user_id,answers,top3')
+    // query profiles
+    const { data, error, count } = await admin
+      .from('profiles')
+      .select('id, email, name, nickname, date_of_birth, gender, country, state, created_at, updated_at', { count: 'exact' })
       .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+      .range(from, to);
 
     if (error) throw error;
 
-    if (!results || results.length === 0) {
-      return okJSON({ items: [], meta: { admin: adminEmail } });
-    }
-
-    // 2) join emails
-    const userIds = [...new Set(results.map(r => r.user_id).filter(Boolean))];
-    let emailById = {};
-    if (userIds.length) {
-      const { data: profs, error: pErr } = await supabase
-        .from('profiles')
-        .select('id,email')
-        .in('id', userIds);
-      if (pErr) throw pErr;
-      emailById = Object.fromEntries((profs || []).map(p => [p.id, p.email]));
-    }
-
-    const items = results.map(r => ({ ...r, user_email: emailById[r.user_id] || null }));
-    return okJSON({ items, meta: { admin: adminEmail } });
+    return {
+      statusCode: 200,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: data || [], count: count ?? (data?.length || 0) })
+    };
   } catch (err) {
-    if (err?.message === 'NO_ADMIN_EMAIL_HEADER')
-      return errorJSON(401, 'Missing x-admin-email header');
-    if (err?.message === 'NOT_ALLOWED')
-      return errorJSON(403, 'This email is not allowed to access the admin API');
-
-    return errorJSON(500, 'adminListResults failed', String(err?.message || err));
+    console.error('adminListUsers error:', err);
+    return {
+      statusCode: 500,
+      headers: { ...CORS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: String(err.message || err) })
+    };
   }
-};
+}
