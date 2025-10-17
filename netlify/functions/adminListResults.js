@@ -1,103 +1,53 @@
 // netlify/functions/adminListResults.js
 const { createClient } = require('@supabase/supabase-js');
 
-const ALLOW_ORIGIN = '*';
+const ALLOW_ORIGIN  = 'https://scopeonride.webflow.io'; // or '*'
+const ALLOW_HEADERS = 'content-type, x-admin-email';
 const cors = {
   'Access-Control-Allow-Origin': ALLOW_ORIGIN,
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'content-type',
+  'Access-Control-Allow-Headers': ALLOW_HEADERS,
 };
 
 exports.handler = async (event) => {
-  // CORS preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: cors, body: '' };
+    return { statusCode: 204, headers: cors, body: '' };
   }
 
   const headers = { 'Content-Type': 'application/json', ...cors };
 
   try {
     const url = new URL(event.rawUrl || `https://${event.headers.host}${event.path}${event.rawQuery ? '?' + event.rawQuery : ''}`);
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 200);
+    const limit  = Math.min(parseInt(url.searchParams.get('limit')  || '20', 10), 100);
     const offset = Math.max(parseInt(url.searchParams.get('offset') || '0', 10), 0);
+    const q      = (url.searchParams.get('q') || '').trim();
 
-    // --- Mock quick test ---
-    if ((url.searchParams.get('mock') || '') === '1') {
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          items: [
-            {
-              id: 1,
-              created_at: new Date().toISOString(),
-              user_id: '00000000-0000-4000-8000-000000000001',
-              answers: { Q1: 'Personal' },
-              top3: [{ brand: 'Tesla', model: 'Model 3', reason: 'electric' }],
-              profile: { id: '00000000-0000-4000-8000-000000000001', email: 'vip@example.com', name: 'VIP' },
-            },
-          ],
-        }),
-      };
-    }
+    // optionally read but not enforce
+    const adminEmail = event.headers['x-admin-email'] || event.headers['X-Admin-Email'];
 
     const SUPABASE_URL = process.env.SUPABASE_URL;
     const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      return {
-        statusCode: 500,
-        headers,
-        body: JSON.stringify({ error: 'CONFIG_MISSING', message: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY' }),
-      };
-    }
-
     const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // 1) Fetch results page (no join)
+    // join results ← profiles (for name/email)
     let rq = sb
       .from('results')
-      .select('id, created_at, user_id, answers, top3', { count: 'exact' })
+      .select('id, created_at, top3, answers, profiles:profiles!results_user_id_fkey ( id, email, name, nickname )')
       .order('created_at', { ascending: false });
+
+    if (q) {
+      rq = rq.or(`profiles.email.ilike.%${q}%,profiles.name.ilike.%${q}%`);
+    }
 
     if (offset) rq = rq.range(offset, offset + limit - 1);
     else rq = rq.limit(limit);
 
-    const { data: results, error: resErr } = await rq;
-    if (resErr) {
-      return { statusCode: 500, headers, body: JSON.stringify({ error: 'RESULTS_QUERY_FAILED', message: resErr.message }) };
-    }
+    const { data, error } = await rq;
+    if (error) throw error;
 
-    if (!results || results.length === 0) {
-      return { statusCode: 200, headers, body: JSON.stringify({ items: [] }) };
-    }
-
-    // 2) Batch fetch matching profiles by id IN (user_id)
-    const userIds = [...new Set(results.map(r => r.user_id).filter(Boolean))];
-    let profilesById = {};
-    if (userIds.length) {
-      const { data: profiles, error: profErr } = await sb
-        .from('profiles')
-        .select('id, email, name, nickname, dob, gender, country, state, updated_at')
-        .in('id', userIds);
-
-      if (profErr) {
-        // Don’t hard-fail; return results without profile to keep UI working
-        profilesById = {};
-      } else {
-        profilesById = (profiles || []).reduce((acc, p) => {
-          acc[p.id] = p; return acc;
-        }, {});
-      }
-    }
-
-    // 3) Stitch profile into each result (as `profile`)
-    const items = results.map(r => ({
-      ...r,
-      profile: profilesById[r.user_id] || null
-    }));
-
-    return { statusCode: 200, headers, body: JSON.stringify({ items }) };
+    return { statusCode: 200, headers, body: JSON.stringify({ items: data || [] }) };
   } catch (err) {
-    return { statusCode: 500, headers, body: JSON.stringify({ error: 'ADMIN_RESULTS_CRASH', message: String(err?.message || err) }) };
+    console.error('adminListResults crash:', err);
+    return { statusCode: 500, headers, body: JSON.stringify({ error: 'ADMIN_RESULTS', message: String(err?.message || err) }) };
   }
 };
