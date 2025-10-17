@@ -2,28 +2,26 @@
 const { createClient } = require('@supabase/supabase-js');
 
 const ALLOW_ORIGIN = '*';
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': ALLOW_ORIGIN,
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'content-type',
-  };
-}
+const cors = {
+  'Access-Control-Allow-Origin': ALLOW_ORIGIN,
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'content-type',
+};
 
 exports.handler = async (event) => {
-  // Preflight
+  // CORS preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: corsHeaders(), body: '' };
+    return { statusCode: 200, headers: cors, body: '' };
   }
 
-  const headers = { 'Content-Type': 'application/json', ...corsHeaders() };
+  const headers = { 'Content-Type': 'application/json', ...cors };
 
   try {
     const url = new URL(event.rawUrl || `https://${event.headers.host}${event.path}${event.rawQuery ? '?' + event.rawQuery : ''}`);
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 200);
     const offset = Math.max(parseInt(url.searchParams.get('offset') || '0', 10), 0);
 
-    // Mock mode
+    // --- Mock quick test ---
     if ((url.searchParams.get('mock') || '') === '1') {
       return {
         statusCode: 200,
@@ -31,16 +29,12 @@ exports.handler = async (event) => {
         body: JSON.stringify({
           items: [
             {
-              id: 123,
+              id: 1,
               created_at: new Date().toISOString(),
               user_id: '00000000-0000-4000-8000-000000000001',
-              answers: { Q1: 'Personal', budget: '200-400' },
-              top3: [
-                { brand: 'Tesla', model: 'Model 3', reason: 'electric and modern', image: '' },
-                { brand: 'BMW', model: 'X5', reason: 'luxury family SUV', image: '' },
-                { brand: 'Toyota', model: 'Corolla', reason: 'reliable', image: '' },
-              ],
-              profiles: { email: 'vip1@example.com', name: 'VIP One', nickname: 'VIP' },
+              answers: { Q1: 'Personal' },
+              top3: [{ brand: 'Tesla', model: 'Model 3', reason: 'electric' }],
+              profile: { id: '00000000-0000-4000-8000-000000000001', email: 'vip@example.com', name: 'VIP' },
             },
           ],
         }),
@@ -59,25 +53,50 @@ exports.handler = async (event) => {
 
     const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // results with joined profiles (email/name/nickname)
-    // Supabase will use FK results.user_id -> profiles.id
-    let q = sb
+    // 1) Fetch results page (no join)
+    let rq = sb
       .from('results')
-      .select(
-        'id, created_at, user_id, answers, top3, profiles ( id, email, name, nickname )',
-        { count: 'exact' }
-      )
+      .select('id, created_at, user_id, answers, top3', { count: 'exact' })
       .order('created_at', { ascending: false });
 
-    if (offset) q = q.range(offset, offset + limit - 1);
-    else q = q.limit(limit);
+    if (offset) rq = rq.range(offset, offset + limit - 1);
+    else rq = rq.limit(limit);
 
-    const { data, error } = await q;
-    if (error) {
-      return { statusCode: 500, headers, body: JSON.stringify({ error: 'ADMIN_RESULTS_FAILED', message: error.message }) };
+    const { data: results, error: resErr } = await rq;
+    if (resErr) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: 'RESULTS_QUERY_FAILED', message: resErr.message }) };
     }
 
-    return { statusCode: 200, headers, body: JSON.stringify({ items: data || [] }) };
+    if (!results || results.length === 0) {
+      return { statusCode: 200, headers, body: JSON.stringify({ items: [] }) };
+    }
+
+    // 2) Batch fetch matching profiles by id IN (user_id)
+    const userIds = [...new Set(results.map(r => r.user_id).filter(Boolean))];
+    let profilesById = {};
+    if (userIds.length) {
+      const { data: profiles, error: profErr } = await sb
+        .from('profiles')
+        .select('id, email, name, nickname, dob, gender, country, state, updated_at')
+        .in('id', userIds);
+
+      if (profErr) {
+        // Don’t hard-fail; return results without profile to keep UI working
+        profilesById = {};
+      } else {
+        profilesById = (profiles || []).reduce((acc, p) => {
+          acc[p.id] = p; return acc;
+        }, {});
+      }
+    }
+
+    // 3) Stitch profile into each result (as `profile`)
+    const items = results.map(r => ({
+      ...r,
+      profile: profilesById[r.user_id] || null
+    }));
+
+    return { statusCode: 200, headers, body: JSON.stringify({ items }) };
   } catch (err) {
     return { statusCode: 500, headers, body: JSON.stringify({ error: 'ADMIN_RESULTS_CRASH', message: String(err?.message || err) }) };
   }
