@@ -1,93 +1,79 @@
 // netlify/functions/adminUserDetails.js
-import { createClient } from "@supabase/supabase-js";
+const { createClient } = require("@supabase/supabase-js");
 
-// --- CORS ---
-const ORIGINS = [
-  "https://scopeonride.webflow.io",
-  "https://carbackendd.netlify.app",
-  "http://localhost:8888",
-  "http://localhost:3000",
-];
-const ALLOW_HEADERS = "content-type,x-admin-email";
-function cors(req) {
-  const origin = req.headers.get("origin") || "";
-  const allow = ORIGINS.find(o => origin.startsWith(o)) || "*";
-  return {
-    "Access-Control-Allow-Origin": allow,
-    "Access-Control-Allow-Headers": ALLOW_HEADERS,
-    "Access-Control-Allow-Methods": "GET,OPTIONS",
-  };
-}
+const CORS = {
+  "Access-Control-Allow-Origin": "https://scopeonride.webflow.io", // use "*" while testing if needed
+  "Access-Control-Allow-Methods": "GET,OPTIONS",
+  "Access-Control-Allow-Headers": "content-type, x-admin-email",
+};
 
-// --- Admin allowlist (same emails you’ve been using) ---
-const ADMINS = new Set([
-  "anaskaroti@gmail.com",
-  "anas@grizzlyn.com",
-  "anas@scopeonride.com",
-  "anaskarotii@gmail.com",
-]);
-
-// --- Supabase client (use your env vars in Netlify) ---
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE; // service key is required for server-side reads across users
-const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-  auth: { persistSession: false },
-});
+const SUPABASE_SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-export async function handler(event) {
-  const headers = cors(new Request("", { headers: event.headers }));
+exports.handler = async (event) => {
+  // Preflight
   if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers };
+    return { statusCode: 204, headers: CORS, body: "" };
   }
 
   try {
-    const adminEmail = event.headers["x-admin-email"] || event.headers["X-Admin-Email"];
-    if (!adminEmail || !ADMINS.has(String(adminEmail).toLowerCase())) {
+    const headers = { ...CORS, "content-type": "application/json" };
+
+    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE);
+
+    const qs = event.queryStringParameters || {};
+    const id = (qs.id || "").trim();
+    const email = (qs.email || "").trim();
+
+    if (!id && !email) {
       return {
-        statusCode: 401,
+        statusCode: 400,
         headers,
-        body: JSON.stringify({ error: "Unauthorized admin" }),
+        body: JSON.stringify({ error: "Missing id or email" }),
       };
     }
 
-    const id = (event.queryStringParameters?.id || "").trim();
-    if (!id) {
-      return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing id" }) };
+    // --- Fetch profile (ALL columns) ---
+    let profile = null;
+    if (id) {
+      const { data, error } = await sb.from("profiles").select("*").eq("id", id).single();
+      if (error) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: "profile not found", detail: error.message }) };
+      }
+      profile = data;
+    } else {
+      const { data, error } = await sb.from("profiles").select("*").eq("email", email).single();
+      if (error) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: "profile not found", detail: error.message }) };
+      }
+      profile = data;
     }
 
-    // Profile
-    const { data: profile, error: pErr } = await sb
-      .from("profiles")
-      .select("id,email,name,nickname,dob,gender,country,state,updated_at")
-      .eq("id", id)
-      .single();
-
-    if (pErr && pErr.code !== "PGRST116") throw pErr; // PGRST116 = No rows
-
-    // Results (latest first)
+    // --- Fetch all results for that user ---
     const { data: results, error: rErr } = await sb
       .from("results")
-      .select("id,created_at,answers,top3")
-      .eq("user_id", id)
-      .order("created_at", { ascending: false })
-      .limit(50);
+      .select("id,created_at,top3,answers")
+      .eq("user_id", profile.id)
+      .order("created_at", { ascending: false });
 
-    if (rErr) throw rErr;
+    if (rErr) {
+      return { statusCode: 500, headers, body: JSON.stringify({ error: "db error (results)", detail: rErr.message }) };
+    }
 
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({
-        profile: profile || null,
-        results: results || [],
+        profile,                 // <-- all profile columns
+        results: results || [],  // all user results
         latest: (results && results[0]) || null,
       }),
     };
   } catch (e) {
     return {
       statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: e.message || String(e) }),
+      headers: CORS,
+      body: JSON.stringify({ error: String(e?.message || e) }),
     };
   }
-}
+};
