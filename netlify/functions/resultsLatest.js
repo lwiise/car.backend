@@ -1,54 +1,37 @@
 // netlify/functions/resultsLatest.js
-const { createClient } = require("@supabase/supabase-js");
+const { withCors } = require("./cors");
+const { getAdminClient } = require("./_supabase");
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*", // TODO: restrict later
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Methods": "GET, OPTIONS"
-};
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-exports.handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: CORS, body: "ok" };
+exports.handler = withCors(async (event) => {
+  if (event.httpMethod !== "GET") {
+    return { statusCode: 405, body: "Method Not Allowed" };
   }
 
-  try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE) throw new Error("Supabase env not configured");
-    if (event.httpMethod !== "GET") {
-      return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: "Method not allowed" }) };
-    }
-
-    const authHeader = event.headers.authorization || event.headers.Authorization || "";
-    if (!authHeader.startsWith("Bearer ")) throw new Error("Missing bearer token");
-    const userToken = authHeader.slice("Bearer ".length).trim();
-
-    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE);
-
-    // Validate session & get user id
-    const { data: userData, error: userErr } = await admin.auth.getUser(userToken);
-    if (userErr || !userData?.user) throw new Error("Invalid user session");
-    const userId = userData.user.id;
-
-    // Most recent result
-    const { data, error } = await admin
-      .from("results")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(); // ok if no rows
-
-    if (error) throw error;
-
-    const top3_json = data?.top3 || [];
-    const created_at = data?.created_at || null;
-
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ top3_json, created_at }) };
-  } catch (err) {
-    console.error("resultsLatest error:", err);
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: String(err.message || err) }) };
+  const auth = event.headers.authorization || "";
+  if (!auth.startsWith("Bearer ")) {
+    return { statusCode: 401, body: JSON.stringify({ error: "UNAUTHORIZED" }) };
   }
-};
+
+  const token = auth.replace(/^Bearer\s+/i, "");
+  const sb = getAdminClient();
+  const { data: userData, error: userErr } = await sb.auth.getUser(token);
+  if (userErr || !userData?.user?.id) {
+    return { statusCode: 401, body: JSON.stringify({ error: "INVALID_SESSION" }) };
+  }
+  const userId = userData.user.id;
+
+  const { data, error } = await sb
+    .from("results")
+    .select("id,created_at,top3")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[resultsLatest] error", error);
+    return { statusCode: 500, body: JSON.stringify({ error: "DB" }) };
+  }
+
+  return { statusCode: 200, body: JSON.stringify({ top3_json: data?.top3 || [], created_at: data?.created_at || null }) };
+});
