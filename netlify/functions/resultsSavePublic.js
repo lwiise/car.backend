@@ -1,38 +1,32 @@
 // netlify/functions/resultsSavePublic.js
-import { createClient } from '@supabase/supabase-js';
+const { withCors } = require("./cors");
+const { getAdminClient } = require("./_supabase");
 
-export const handler = async (event) => {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+exports.handler = withCors(async (event) => {
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, body: "Method Not Allowed" };
   }
-  try {
-    const { guest_id, answers, top3 } = JSON.parse(event.body || '{}') || {};
-    if (!guest_id || !Array.isArray(top3)) {
-      return { statusCode: 400, body: JSON.stringify({ error: 'guest_id and top3 are required' }) };
-    }
 
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE; // service key (secure)
-    if (!url || !key) {
-      return { statusCode: 500, body: JSON.stringify({ error: 'Missing Supabase env vars' }) };
-    }
-    const sb = createClient(url, key);
+  let body = {};
+  try { body = event.body ? JSON.parse(event.body) : {}; } catch {}
 
-    // Insert into your results table. Adjust table/columns if different.
-    const payload = {
-      user_id: null,
-      guest_id,
-      is_guest: true,
-      answers: answers || {},
-      top3: top3,
-      created_at: new Date().toISOString()
-    };
+  const answers = body.answers || {};
+  const top3 = Array.isArray(body.top3) ? body.top3 : [];
+  const guest_id = (body.guest_id || "").trim() || null;
 
-    const { error } = await sb.from('results').insert(payload);
-    if (error) throw error;
-
-    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
-  } catch (e) {
-    return { statusCode: 500, body: JSON.stringify({ error: e.message || String(e) }) };
+  if (!guest_id) {
+    return { statusCode: 400, body: JSON.stringify({ error: "guest_id required" }) };
   }
-};
+
+  const sb = getAdminClient();
+  const { error: insErr } = await sb
+    .from("results")
+    .insert([{ user_id: null, guest_id, answers, top3 }]);
+
+  if (insErr) {
+    console.error("[resultsSavePublic] insert error", insErr);
+    return { statusCode: 500, body: JSON.stringify({ error: "DB", detail: insErr.message }) };
+  }
+
+  return { statusCode: 200, body: JSON.stringify({ ok: true }) };
+});
