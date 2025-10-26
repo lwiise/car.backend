@@ -1,68 +1,77 @@
 // netlify/functions/adminExportResults.js
-const { withCors } = require("./cors");
-const { getAdminClient } = require("./_supabase");
+const { withCors, corsHeaders } = require("./cors");
+const { sbAdmin, parseBody } = require("./_supabase");
 
-function esc(v) {
-  if (v == null) return "";
-  const s = String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+function csvEscape(v) {
+  const s = (v ?? "").toString();
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
 }
 
 exports.handler = withCors(async (event) => {
-  if (event.httpMethod !== "GET") {
-    return { statusCode: 405, body: "Method Not Allowed" };
-  }
+  const supabase = sbAdmin();
+  const { search = "", type = "all", lastDays = null, order = "desc", limit = 5000 } = parseBody(event);
 
-  const adminEmail = event.headers["x-admin-email"] || event.headers["X-Admin-Email"] || "";
-  if (!adminEmail) console.warn("[adminExportResults] Missing X-Admin-Email");
-
-  const sb = getAdminClient();
-
-  const { data: rows, error } = await sb
+  let query = supabase
     .from("results")
-    .select("id,created_at,top3,answers,user_id,guest_id")
-    .order("created_at", { ascending: false })
-    .limit(2000);
+    .select("id, created_at, user_id, guest_id, top3, answers", { count: "exact" })
+    .order("created_at", { ascending: order === "asc" })
+    .limit(limit);
 
-  if (error) {
-    console.error("[adminExportResults] DB error", error);
-    return { statusCode: 500, body: JSON.stringify({ error: "EXPORT_DB" }) };
+  if (type === "users")   query = query.is("guest_id", null);
+  if (type === "guests")  query = query.not("guest_id", "is", null);
+
+  if (lastDays && Number(lastDays) > 0) {
+    const since = new Date(Date.now() - Number(lastDays) * 86400000).toISOString();
+    query = query.gte("created_at", since);
   }
 
-  const userIds = [...new Set(rows.map((r) => r.user_id).filter(Boolean))];
-  let profiles = [];
+  const { data: resRows, error: resErr } = await query;
+  if (resErr) return { statusCode: 500, body: { error: resErr.message } };
+
+  const userIds = [...new Set((resRows || []).map(r => r.user_id).filter(Boolean))];
+  let profilesById = {};
   if (userIds.length) {
-    const { data: profs } = await sb
+    const { data: profs } = await supabase
       .from("profiles")
-      .select("id,email,name,nickname,country,state")
+      .select("id, email, name, country, state")
       .in("id", userIds);
-    profiles = profs || [];
-  }
-  const byId = Object.fromEntries(profiles.map((p) => [p.id, p]));
-
-  const header = ["ResultID", "CreatedAt", "Email", "Name", "Country", "State", "#Top3"];
-  const csvRows = [header.join(",")];
-
-  for (const r of rows) {
-    const p = r.user_id ? byId[r.user_id] || {} : {};
-    const topCount = Array.isArray(r.top3) ? r.top3.length : 0;
-    csvRows.push([
-      esc(r.id),
-      esc(r.created_at),
-      esc(p.email || ""),
-      esc(p.name || p.nickname || ""),
-      esc(p.country || ""),
-      esc(p.state || ""),
-      esc(topCount),
-    ].join(","));
+    profilesById = (profs || []).reduce((a, p) => (a[p.id] = p, a), {});
   }
 
+  const s = String(search || "").trim().toLowerCase();
+  const filtered = !s ? resRows : resRows.filter(r => {
+    const prof = r.user_id ? profilesById[r.user_id] : null;
+    const hay = [prof?.name, prof?.email, prof?.country, prof?.state, JSON.stringify(r.top3||""), JSON.stringify(r.answers||"")].join(" ").toLowerCase();
+    return hay.includes(s);
+  });
+
+  const header = ["Date", "Type", "Name", "Email", "Country", "State", "Pick #1", "Top-3", "Result ID"];
+  const rows = filtered.map(r => {
+    const prof = r.user_id ? profilesById[r.user_id] : null;
+    const pick1 = Array.isArray(r.top3) && r.top3[0] ? `${r.top3[0].brand || ""} ${r.top3[0].model || ""}`.trim() : "";
+    const top3 = (Array.isArray(r.top3) ? r.top3.slice(0,3) : []).map(x => `${x.brand||""} ${x.model||""}`.trim()).join(" | ");
+    return [
+      r.created_at,
+      r.user_id ? "User" : "Guest",
+      prof?.name || "",
+      prof?.email || "",
+      prof?.country || "",
+      prof?.state || "",
+      pick1,
+      top3,
+      r.id
+    ];
+  });
+
+  const csv = [header, ...rows].map(r => r.map(csvEscape).join(",")).join("\n");
   return {
     statusCode: 200,
     headers: {
+      ...corsHeaders(event),
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="results_export.csv"`,
+      "Content-Disposition": `attachment; filename="results_export_${Date.now()}.csv"`
     },
-    body: csvRows.join("\n"),
+    body: csv
   };
 });
