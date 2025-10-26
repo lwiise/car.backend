@@ -1,61 +1,81 @@
 // netlify/functions/adminListResults.js
 const { withCors } = require("./cors");
-const { getAdminClient } = require("./_supabase");
+const { sbAdmin, parseBody } = require("./_supabase");
 
 exports.handler = withCors(async (event) => {
-  if (event.httpMethod !== "GET") {
-    return { statusCode: 405, body: "Method Not Allowed" };
-  }
+  const supabase = sbAdmin();
+  const {
+    search = "",            // free-text
+    type = "all",           // "all" | "users" | "guests"
+    lastDays = null,        // 7|30|90|365|null
+    page = 1,
+    pageSize = 25,
+    order = "desc"          // "asc" | "desc"
+  } = parseBody(event);
 
-  const adminEmail = event.headers["x-admin-email"] || event.headers["X-Admin-Email"] || "";
-  if (!adminEmail) console.warn("[adminListResults] Missing X-Admin-Email");
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
 
-  const qsp = event.queryStringParameters || {};
-  const limit = Math.min(parseInt(qsp.limit || "100", 10), 500);
-  const offset = Math.max(parseInt(qsp.offset || "0", 10), 0);
-  const only = (qsp.only || "").toLowerCase(); // 'users' | 'guests' | ''
-
-  const sb = getAdminClient();
-
-  let query = sb
+  let query = supabase
     .from("results")
-    .select("id,created_at,top3,answers,user_id,guest_id")
-    .order("created_at", { ascending: false })
-    .range(offset, offset + limit - 1);
+    .select("id, created_at, user_id, guest_id, top3, answers", { count: "exact" })
+    .order("created_at", { ascending: order === "asc" })
+    .range(from, to);
 
-  if (only === "users") query = query.not("user_id", "is", null);
-  if (only === "guests") query = query.is("user_id", null);
+  if (type === "users")   query = query.is("guest_id", null);
+  if (type === "guests")  query = query.not("guest_id", "is", null);
 
-  const { data: results, error } = await query;
-  if (error) {
-    console.error("[adminListResults] results error", error);
-    return { statusCode: 500, body: JSON.stringify({ error: "ADMIN_RESULTS" }) };
+  if (lastDays && Number(lastDays) > 0) {
+    const since = new Date(Date.now() - Number(lastDays) * 86400000).toISOString();
+    query = query.gte("created_at", since);
   }
 
-  const userIds = [...new Set((results || []).map((r) => r.user_id).filter(Boolean))];
-  let profiles = [];
+  const { data: resRows, error: resErr, count } = await query;
+  if (resErr) return { statusCode: 500, body: { error: resErr.message } };
+
+  // hydrate profiles for registered users
+  const userIds = [...new Set((resRows || []).map(r => r.user_id).filter(Boolean))];
+  let profilesById = {};
   if (userIds.length) {
-    const { data: profs, error: pErr } = await sb
+    const { data: profs, error: pErr } = await supabase
       .from("profiles")
-      .select("id,email,name,nickname,country,state,gender,dob")
+      .select("id, email, name, nickname, gender, dob, country, state")
       .in("id", userIds);
-    if (pErr) {
-      console.error("[adminListResults] profiles error", pErr);
-    } else {
-      profiles = profs || [];
-    }
+    if (pErr) return { statusCode: 500, body: { error: pErr.message } };
+    profilesById = (profs || []).reduce((a, p) => (a[p.id] = p, a), {});
   }
-  const byId = Object.fromEntries(profiles.map((p) => [p.id, p]));
 
-  const items = (results || []).map((r) => ({
-    id: r.id,
-    created_at: r.created_at,
-    top3: r.top3,
-    answers: r.answers,
-    user_id: r.user_id,
-    guest_id: r.guest_id || null,
-    profile: r.user_id ? byId[r.user_id] || null : null,
-  }));
+  // client-side search across profile + picks + answers
+  const s = String(search || "").trim().toLowerCase();
+  const filtered = !s ? resRows : resRows.filter(r => {
+    const prof = r.user_id ? profilesById[r.user_id] : null;
+    const hay = [
+      prof?.name, prof?.email, prof?.country, prof?.state,
+      JSON.stringify(r.top3 || ""),
+      JSON.stringify(r.answers || "")
+    ].join(" ").toLowerCase();
+    return hay.includes(s);
+  });
 
-  return { statusCode: 200, body: JSON.stringify({ items }) };
+  const rows = filtered.map(r => {
+    const prof = r.user_id ? profilesById[r.user_id] : null;
+    const pick1 = Array.isArray(r.top3) && r.top3[0] ? `${r.top3[0].brand || ""} ${r.top3[0].model || ""}`.trim() : "";
+    const top3Summary = (Array.isArray(r.top3) ? r.top3.slice(0,3) : [])
+      .map(it => `${it.brand || ""} ${it.model || ""}`.trim()).filter(Boolean).join(" • ");
+    return {
+      id: r.id,
+      date: r.created_at,
+      type: r.user_id ? "User" : "Guest",
+      user_id: r.user_id || null,
+      guest_id: r.guest_id || null,
+      name: prof?.name || (r.guest_id ? `Guest ${String(r.guest_id).slice(0,6)}` : ""),
+      email: prof?.email || "",
+      country: prof?.country || "",
+      state: prof?.state || "",
+      pick1,
+      top3Summary
+    };
+  });
+
+  return { statusCode: 200, body: { page, pageSize, total: count ?? rows.length, rows } };
 });
