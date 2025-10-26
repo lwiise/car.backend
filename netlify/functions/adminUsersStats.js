@@ -1,93 +1,59 @@
 // netlify/functions/adminUsersStats.js
-const { createClient } = require("@supabase/supabase-js");
+const { withCors } = require("./cors");
+const { sbAdmin, parseBody, startOfDay } = require("./_supabase");
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",                // ← use "*" while testing
-  "Access-Control-Allow-Methods": "GET,OPTIONS",
-  "Access-Control-Allow-Headers": "content-type, x-admin-email, X-Admin-Email",
-};
+exports.handler = withCors(async (event) => {
+  const supabase = sbAdmin();
+  const { lastDays = 7 } = parseBody(event);
+  const since = new Date(Date.now() - Number(lastDays) * 86400000).toISOString();
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // totals: registered users
+  const { count: totalUsers, error: tErr } = await supabase
+    .from("profiles").select("*", { count: "exact", head: true });
+  if (tErr) return { statusCode: 500, body: { error: tErr.message } };
 
-exports.handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers: CORS, body: "" };
+  // new users in range
+  const { count: newUsers, error: nErr } = await supabase
+    .from("profiles").select("*", { count: "exact", head: true })
+    .gte("created_at", since);
+  if (nErr) return { statusCode: 500, body: { error: nErr.message } };
+
+  // distinct guests (total + new in range)
+  const { data: allGuests, error: gErr } = await supabase
+    .from("results").select("guest_id, created_at").not("guest_id", "is", null);
+  if (gErr) return { statusCode: 500, body: { error: gErr.message } };
+
+  const totalGuests = new Set((allGuests || []).map(r => r.guest_id)).size;
+  const newGuests = new Set((allGuests || []).filter(r => r.created_at >= since).map(r => r.guest_id)).size;
+
+  // daily series
+  const series = [];
+  for (let i = Number(lastDays) - 1; i >= 0; i--) {
+    const day = startOfDay(new Date(Date.now() - i * 86400000));
+    const next = new Date(day); next.setDate(day.getDate() + 1);
+
+    const { count: u } = await supabase
+      .from("profiles").select("*", { count: "exact", head: true })
+      .gte("created_at", day.toISOString()).lt("created_at", next.toISOString());
+
+    const { data: gDay } = await supabase
+      .from("results").select("guest_id, created_at")
+      .not("guest_id", "is", null)
+      .gte("created_at", day.toISOString()).lt("created_at", next.toISOString());
+
+    series.push({
+      date: day.toISOString().slice(0,10),
+      users: u || 0,
+      guests: new Set((gDay || []).map(r => r.guest_id)).size
+    });
   }
-  const headers = { ...CORS, "content-type": "application/json" };
 
-  try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      throw new Error("Missing env SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  return {
+    statusCode: 200,
+    body: {
+      totals: { users: totalUsers || 0, guests: totalGuests || 0 },
+      newInRange: { users: newUsers || 0, guests: newGuests || 0 },
+      series
     }
-    const qs = event.queryStringParameters || {};
-    const range = (qs.range || "day").toLowerCase();     // day|week|month
-    const days  = Number(qs.days  || 30);
-    if (!["day","week","month"].includes(range)) {
-      return { statusCode: 400, headers, body: JSON.stringify({ error:"bad_range" }) };
-    }
-
-    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-    // total users
-    const { count: total, error: tErr } = await sb
-      .from("profiles")
-      .select("*", { head: true, count: "exact" });
-    if (tErr) throw tErr;
-
-    if (days <= 0) {
-      return { statusCode: 200, headers, body: JSON.stringify({ total, range, days, buckets: [] }) };
-    }
-
-    const now   = new Date();
-    const since = new Date(now.getTime() - days*24*60*60*1000);
-
-    // Count rows inside window (for paging)
-    const { count: windowCount, error: wErr } = await sb
-      .from("profiles")
-      .select("created_at", { head: true, count: "exact" })
-      .gte("created_at", since.toISOString());
-    if (wErr) throw wErr;
-
-    const keyFor = (iso) => {
-      const d = new Date(iso);
-      if (range === "day")   return d.toISOString().slice(0, 10);               // YYYY-MM-DD
-      if (range === "week") {                                                   // week start (Mon)
-        const u = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-        const dow = u.getUTCDay() || 7;
-        u.setUTCDate(u.getUTCDate() - (dow - 1));
-        return u.toISOString().slice(0, 10);
-      }
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`; // YYYY-MM
-    };
-
-    const pageSize = 2000;
-    const pages = Math.ceil((windowCount || 0) / pageSize);
-    const bucket = new Map();
-
-    for (let p = 0; p < pages; p++) {
-      const from = p * pageSize;
-      const to   = from + pageSize - 1;
-      const { data, error } = await sb
-        .from("profiles")
-        .select("created_at")
-        .gte("created_at", since.toISOString())
-        .order("created_at", { ascending: true })
-        .range(from, to);
-      if (error) throw error;
-
-      (data || []).forEach(r => {
-        const k = keyFor(r.created_at);
-        bucket.set(k, (bucket.get(k) || 0) + 1);
-      });
-    }
-
-    const buckets = Array.from(bucket.entries())
-      .sort((a,b) => a[0] < b[0] ? -1 : 1)
-      .map(([key,count]) => ({ key, count }));
-
-    return { statusCode: 200, headers, body: JSON.stringify({ total, range, days, buckets }) };
-  } catch (e) {
-    return { statusCode: 500, headers, body: JSON.stringify({ error: String(e?.message || e) }) };
-  }
-};
+  };
+});
