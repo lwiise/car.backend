@@ -1,37 +1,39 @@
 // netlify/functions/cors.js
-// Add your real domains here
 const ALLOWED_ORIGINS = [
   "https://scopeonride.webflow.io",
-  "https://carbackendd.netlify.app",
+  "https://www.scopeonride.com",
+  "https://scopeonride.com",
   "http://localhost:8888",
-  "http://localhost:3000",
+  "http://127.0.0.1:5500",
+  "http://localhost:5500"
 ];
 
-function getOrigin(event) {
-  const o = event.headers?.origin || event.headers?.Origin || "";
-  return ALLOWED_ORIGINS.includes(o) ? o : ALLOWED_ORIGINS[0];
-}
-
-function baseHeaders(event) {
-  const origin = getOrigin(event);
+function corsHeaders(event) {
+  const origin = event.headers.origin || event.headers.Origin || "";
+  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
   return {
-    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Origin": allow,
     "Vary": "Origin",
-    "Access-Control-Allow-Credentials": "false",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Email, x-admin-email",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "authorization,content-type",
+    "Access-Control-Max-Age": "86400"
   };
 }
 
 function withCors(handler) {
   return async (event, context) => {
-    // Preflight
     if (event.httpMethod === "OPTIONS") {
-      return { statusCode: 204, headers: baseHeaders(event), body: "" };
+      return { statusCode: 204, headers: corsHeaders(event), body: "" };
     }
-    const res = await handler(event, context);
-    return { ...res, headers: { ...(res.headers || {}), ...baseHeaders(event) } };
+    try {
+      const resp = await handler(event, context);
+      const statusCode = resp?.statusCode ?? 200;
+      const body = typeof resp?.body === "string" ? resp.body : JSON.stringify(resp?.body ?? {});
+      return { statusCode, headers: { ...(resp?.headers || {}), ...corsHeaders(event) }, body };
+    } catch (e) {
+      return { statusCode: 500, headers: corsHeaders(event), body: JSON.stringify({ error: e.message || "Server error" }) };
+    }
   };
 }
 
-module.exports = { withCors };
+module.exports = { withCors, corsHeaders, ALLOWED_ORIGINS };
