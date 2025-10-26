@@ -1,25 +1,26 @@
 // netlify/functions/_supabase.js
 const { createClient } = require("@supabase/supabase-js");
 
-// Expect env vars set in Netlify dashboard
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.SUPABASE_URL_PUBLIC;
-const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_KEY ||
-  process.env.SUPABASE_SECRET;
-
-function getAdminClient() {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    const missing = [];
-    if (!SUPABASE_URL) missing.push("SUPABASE_URL");
-    if (!SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-    const err = new Error(`MISSING_SUPABASE_CREDS: ${missing.join(", ")}`);
-    err.code = "CONFIG";
-    throw err;
-  }
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
+function sbAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !key) throw new Error("Missing SUPABASE_URL / SUPABASE_SERVICE_KEY");
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
-module.exports = { getAdminClient };
+function parseBody(event) {
+  try { return JSON.parse(event.body || "{}"); } catch { return {}; }
+}
+
+function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
+
+async function getUserFromToken(supabase, event) {
+  const auth = event.headers.authorization || event.headers.Authorization || "";
+  const token = (auth.startsWith("Bearer ") ? auth.slice(7) : auth).trim();
+  if (!token) throw new Error("Missing Authorization");
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data?.user) throw new Error("Unauthorized");
+  return data.user;
+}
+
+module.exports = { sbAdmin, parseBody, startOfDay, getUserFromToken };
