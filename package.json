@@ -1,8 +1,0 @@
-{
-  "name": "car-backend",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.43.1"
-  }
-}
