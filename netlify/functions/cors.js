@@ -1,37 +1,55 @@
 // netlify/functions/cors.js
-exports.cors = (handler) => async (event, context) => {
-  const origin = event.headers.origin || "";
-  // Add *now* and your real domains. You can tighten later.
-  const allowList = (process.env.ALLOWED_ORIGIN || "*")
-    .split(",")
-    .map(s => s.trim())
-    .filter(Boolean);
+const ALLOW = (process.env.ALLOWED_ORIGIN || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
 
-  const isAllowed = allowList.includes("*") || allowList.includes(origin);
-  const allowOrigin = isAllowed ? origin : (allowList[0] || "*");
+function pickOrigin(reqOrigin) {
+  if (!reqOrigin) return "*";
+  if (ALLOW.length === 0) return reqOrigin;            // allow any if not configured
+  return ALLOW.includes(reqOrigin) ? reqOrigin : ALLOW[0] || reqOrigin;
+}
 
-  if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 204,
-      headers: {
-        "Access-Control-Allow-Origin": allowOrigin,
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Access-Control-Max-Age": "86400",
-        "Vary": "Origin",
-      },
-      body: ""
-    };
-  }
+// Wrap any Netlify function: exports.handler = cors(async (event, ctx) => { ... })
+module.exports = function cors(fn) {
+  return async (event, context) => {
+    const reqOrigin = event.headers?.origin || event.headers?.Origin || "";
+    const origin = pickOrigin(reqOrigin);
 
-  const res = await handler(event, context);
-  return {
-    ...res,
-    headers: {
-      ...(res.headers || {}),
-      "Access-Control-Allow-Origin": allowOrigin,
-      "Access-Control-Allow-Credentials": "true",
-      "Vary": "Origin",
+    // CORS preflight
+    if (event.httpMethod === "OPTIONS") {
+      return {
+        statusCode: 204,
+        headers: {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+          "Access-Control-Allow-Headers": "authorization, content-type",
+          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+          Vary: "Origin",
+        },
+        body: "",
+      };
+    }
+
+    try {
+      const res = await fn(event, context);
+      const headers = Object.assign({}, res?.headers || {}, {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        Vary: "Origin",
+      });
+      return { ...res, headers };
+    } catch (err) {
+      console.error("Function error:", err);
+      return {
+        statusCode: 500,
+        headers: {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Credentials": "true",
+          Vary: "Origin",
+        },
+        body: JSON.stringify({ error: "Internal error" }),
+      };
     }
   };
 };
