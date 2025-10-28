@@ -1,10 +1,12 @@
-// DO NOT export an object; export the function itself
+// netlify/functions/cors.js
+// CommonJS: require("./cors") returns the wrapper function.
+
 module.exports = function cors(fn) {
-  const pickOrigin = (reqOrigin) => reqOrigin || "*";
+  const chooseOrigin = (reqOrigin) => reqOrigin || "*";
 
   return async (event, context) => {
     const reqOrigin = event.headers?.origin || event.headers?.Origin || "";
-    const origin = pickOrigin(reqOrigin);
+    const origin = chooseOrigin(reqOrigin);
 
     // Preflight
     if (event.httpMethod === "OPTIONS") {
@@ -30,7 +32,7 @@ module.exports = function cors(fn) {
       });
       return { ...res, headers };
     } catch (err) {
-      console.error("Function error:", err);
+      console.error("[CORS] handler error:", err);
       return {
         statusCode: 500,
         headers: {
