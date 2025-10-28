@@ -1,14 +1,12 @@
-// netlify/functions/cors.js
-function pickOrigin(reqOrigin) {
-  // permissive & robust: echo back the caller's origin if present, else *
-  return reqOrigin || "*";
-}
-
+// DO NOT export an object; export the function itself
 module.exports = function cors(fn) {
+  const pickOrigin = (reqOrigin) => reqOrigin || "*";
+
   return async (event, context) => {
     const reqOrigin = event.headers?.origin || event.headers?.Origin || "";
     const origin = pickOrigin(reqOrigin);
 
+    // Preflight
     if (event.httpMethod === "OPTIONS") {
       return {
         statusCode: 204,
