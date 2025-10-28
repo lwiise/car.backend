@@ -1,51 +1,71 @@
-import cors from "./cors.js";
-import { json } from "./_supabase.js";
-import OpenAI from "openai";
+// netlify/functions/carMatch.js
+const cors = require("./cors");
+const { parseJSON } = require("./_supabase");
+const OpenAI = require("openai");
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-export const handler = cors(async (event) => {
-  const body = (() => { try { return JSON.parse(event.body || "{}"); } catch { return {}; } })();
-  const answers = body.answers || {};
+async function handler(event) {
+  const body = parseJSON(event.body);
+  const answers = body?.answers || {};
+  const nowSalt = new Date().toISOString(); // reduce any caching
 
-  if (String(event.queryStringParameters?.mock || "") === "1") {
-    return json([
-      { brand: "Geely", model: "Emgrand EV", reason: "Affordable EV with good range and space." },
-      { brand: "BYD", model: "Han EV", reason: "Impressive range and features within budget." },
-      { brand: "Changan", model: "Eado EV", reason: "Great value electric car for city use." }
-    ]);
-  }
+  // Allow ?mock=1 for emergency fallback
+  const isMock = (event.queryStringParameters || {}).mock === "1";
 
-  const sys = `You pick 3 currently-available car models that fit the user's constraints.
-Return STRICT JSON array with exactly 3 objects: [{"brand":"..","model":"..","reason":".."}].
-No commentary, only JSON.`;
+  async function callOpenAI() {
+    const client = new OpenAI({ apiKey: OPENAI_API_KEY });
+    const sys = `You are a car-matching assistant. 
+Return ONLY valid JSON array of 3 items: 
+[{brand, model, reason, image?}].
+Keep reasons 12-25 words. If unsure, make reasonable picks from widely available models.`;
+    const user = `User answers (salt ${nowSalt}): ${JSON.stringify(answers)}`;
 
-  const user = "Answers: " + JSON.stringify(answers);
-
-  try {
-    const chat = await client.chat.completions.create({
-      model: MODEL,
+    const res = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.6,
       messages: [
         { role: "system", content: sys },
         { role: "user", content: user }
       ],
-      temperature: 0.7,
-      max_tokens: 500
+      response_format: { type: "json_object", schema: { type: "object", properties: { picks: { type: "array" } } } }
     });
 
-    const text = chat.choices?.[0]?.message?.content?.trim() || "[]";
-    let data;
-    try { data = JSON.parse(text); } catch {
-      const m = text.match(/\[[\s\S]*\]/);
-      data = m ? JSON.parse(m[0]) : [];
-    }
+    // try to parse { picks: [...] }
+    const content = res.choices?.[0]?.message?.content || "";
+    let parsed;
+    try { parsed = JSON.parse(content); } catch { parsed = null; }
+    const picks = Array.isArray(parsed?.picks) ? parsed.picks : [];
 
-    if (!Array.isArray(data) || data.length === 0) {
-      return json([{ brand: "Toyota", model: "Corolla", reason: "Reliable default when uncertain." }], 200);
-    }
-    return json(data, 200);
-  } catch (err) {
-    return json({ error: String(err?.message || err) }, 500);
+    if (picks.length >= 3) return picks.slice(0,3);
+
+    // last resort: try to extract an array directly
+    try {
+      const m = content.match(/\[[\s\S]*\]$/);
+      if (m) {
+        const arr = JSON.parse(m[0]);
+        if (Array.isArray(arr) && arr.length) return arr.slice(0,3);
+      }
+    } catch {}
+    throw new Error("could_not_parse_openai");
   }
-});
+
+  function fallback() {
+    return [
+      { brand: "Toyota", model: "Camry", reason: "Balanced reliability, cost, and space for daily and family needs." },
+      { brand: "Honda", model: "Civic", reason: "Efficient, easy to park, and strong value for city and highway use." },
+      { brand: "Mazda", model: "CX-5", reason: "Comfortable ride with upscale feel and confident handling." },
+    ];
+  }
+
+  try {
+    const picks = (isMock || !OPENAI_API_KEY) ? fallback() : await callOpenAI();
+    return { statusCode: 200, body: JSON.stringify(picks) };
+  } catch (e) {
+    console.warn("carMatch error:", e?.message || e);
+    // Keep the app flowing
+    return { statusCode: 200, body: JSON.stringify(fallback()) };
+  }
+}
+
+exports.handler = cors(handler);
