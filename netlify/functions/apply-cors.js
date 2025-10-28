@@ -1,3 +1,4 @@
+import cors from './cors.js';
 // tools/apply-cors.js
 const fs = require("fs");
 const path = require("path");

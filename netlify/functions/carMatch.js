@@ -1,3 +1,4 @@
+import cors from './cors.js';
 // netlify/functions/carMatch.js
 const cors = require("./cors");
 const { parseJSON } = require("./_supabase");

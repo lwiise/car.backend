@@ -1,3 +1,4 @@
+import cors from './cors.js';
 // netlify/functions/resultsLatest.js
 const cors = require("./cors");
 const { getAdminClient, getUserFromAuth } = require("./_supabase");

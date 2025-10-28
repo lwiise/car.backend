@@ -1,3 +1,4 @@
+import cors from './cors.js';
 // netlify/functions/adminListUsers.js
 const { withCors } = require("./cors");
 const { sbAdmin, parseBody } = require("./_supabase");
