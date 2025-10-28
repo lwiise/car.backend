@@ -7,3 +7,9 @@
     "openai": "^4.56.0"
   }
 }
+{
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.3",
+    "openai": "^4.57.0"
+  }
+}
