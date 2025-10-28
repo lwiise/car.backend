@@ -1,22 +1,14 @@
 // netlify/functions/cors.js
-const ALLOW = (process.env.ALLOWED_ORIGIN || "")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
-
 function pickOrigin(reqOrigin) {
-  if (!reqOrigin) return "*";
-  if (ALLOW.length === 0) return reqOrigin;            // allow any if not configured
-  return ALLOW.includes(reqOrigin) ? reqOrigin : ALLOW[0] || reqOrigin;
+  // permissive & robust: echo back the caller's origin if present, else *
+  return reqOrigin || "*";
 }
 
-// Wrap any Netlify function: exports.handler = cors(async (event, ctx) => { ... })
 module.exports = function cors(fn) {
   return async (event, context) => {
     const reqOrigin = event.headers?.origin || event.headers?.Origin || "";
     const origin = pickOrigin(reqOrigin);
 
-    // CORS preflight
     if (event.httpMethod === "OPTIONS") {
       return {
         statusCode: 204,
