@@ -1,29 +1,30 @@
-// resultsList.js
-import cors from './cors.js';
-import { supabaseAdmin, getUserFromRequest } from './_supabase.js';
+// netlify/functions/resultsList.js
+const cors = require("./cors");
+const { getAdminClient, getUserFromAuth } = require("./_supabase");
 
-export const handler = cors(async (event) => {
-  if (event.httpMethod !== 'GET' && event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
-  }
-
-  const { token, user } = await getUserFromRequest(event);
+async function handler(event) {
+  const { token, user } = await getUserFromAuth(event);
   if (!token || !user) {
-    return { statusCode: 401, body: JSON.stringify({ error: 'NO_SESSION' }) };
+    return { statusCode: 401, body: JSON.stringify({ error: "NO_SESSION" }) };
   }
 
-  const limit = Math.min(50, parseInt((event.queryStringParameters || {}).limit || '20', 10));
+  const qs = event.queryStringParameters || {};
+  const limit = Math.min(parseInt(qs.limit || "10", 10), 50);
+  const offset = Math.max(parseInt(qs.offset || "0", 10), 0);
 
-  const { data, error } = await supabaseAdmin
-    .from('results')
-    .select('id, created_at, top3, answers')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false })
-    .limit(limit);
+  const supa = getAdminClient();
+  const { data, error } = await supa
+    .from("results")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
 
   if (error) {
-    return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+    console.error("resultsList error:", error);
+    return { statusCode: 500, body: JSON.stringify({ error: "DB_QUERY_FAILED" }) };
   }
+  return { statusCode: 200, body: JSON.stringify({ items: data || [] }) };
+}
 
-  return { statusCode: 200, body: JSON.stringify(data) };
-});
+exports.handler = cors(handler);
