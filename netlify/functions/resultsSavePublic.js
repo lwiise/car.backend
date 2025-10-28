@@ -1,19 +1,36 @@
-import cors from "./cors.js";
-import { sbAdmin, json, parseBody } from "./_supabase.js";
-import { randomUUID } from "node:crypto";
+// netlify/functions/resultsSavePublic.js
+const cors = require("./cors");
+const { getAdminClient, getUserFromAuth, parseJSON } = require("./_supabase");
 
-export const handler = cors(async (event) => {
-  const supabase = sbAdmin();
-  const { answers, top3, guest_id } = parseBody(event);
-  const gid = guest_id || randomUUID();
+async function handler(event) {
+  const { token, user } = await getUserFromAuth(event);
+  if (!token || !user) {
+    return { statusCode: 401, body: JSON.stringify({ error: "NO_SESSION" }) };
+  }
 
-  const { error } = await supabase.from("results").insert({
-    user_id: null,
-    guest_id: gid,
-    answers: answers || {},
-    top3: top3 || []
-  });
+  const body = parseJSON(event.body);
+  const answers = body?.answers || {};
+  const top3 = Array.isArray(body?.top3) ? body.top3.slice(0,3) : [];
 
-  if (error) return json({ error: error.message }, 500);
-  return json({ ok: true, guest_id: gid });
-});
+  if (!top3.length) {
+    return { statusCode: 400, body: JSON.stringify({ error: "MISSING_TOP3" }) };
+  }
+
+  const supa = getAdminClient();
+  const insert = {
+    user_id: user.id,
+    email: user.email || null,
+    answers,
+    top3,
+    created_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supa.from("results").insert(insert).select("id").single();
+  if (error) {
+    console.error("results insert error:", error);
+    return { statusCode: 500, body: JSON.stringify({ error: "DB_INSERT_FAILED" }) };
+  }
+  return { statusCode: 200, body: JSON.stringify({ ok: true, id: data.id }) };
+}
+
+exports.handler = cors(handler);
