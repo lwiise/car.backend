@@ -1,15 +1,19 @@
 {
   "name": "car-backend",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.43.1",
-    "openai": "^4.56.0"
-  }
-}
-{
+  "engines": { "node": ">=18.20 <=22" },
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "echo \"no build step\"",
+    "apply:cors": "node tools/apply-cors.mjs"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.3",
     "openai": "^4.57.0"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.33.0"
   }
 }
