@@ -1,20 +1,42 @@
-import cors from "./cors.js";
-import { sbAdmin, json, parseBody, getUserFromToken } from "./_supabase.js";
+// resultsSave.js
+import cors from './cors.js';
+import { supabaseAdmin, getUserFromRequest } from './_supabase.js';
 
 export const handler = cors(async (event) => {
-  const token = (event.headers?.authorization || event.headers?.Authorization || "").replace(/^Bearer\s+/i, "");
-  const user = await getUserFromToken(token);
-  if (!user) return json({ error: "UNAUTHORIZED" }, 401);
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, body: 'Method Not Allowed' };
+  }
 
-  const supabase = sbAdmin();
-  const { answers, top3 } = parseBody(event);
-  const { error } = await supabase.from("results").insert({
-    user_id: user.id,
-    guest_id: null,
-    answers: answers || {},
-    top3: top3 || []
-  });
+  const { token, user } = await getUserFromRequest(event);
+  if (!token || !user) {
+    return { statusCode: 401, body: JSON.stringify({ error: 'NO_SESSION' }) };
+  }
 
-  if (error) return json({ error: error.message }, 500);
-  return json({ ok: true });
+  let body;
+  try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }
+
+  const answers = body.answers ?? null;
+  const top3    = body.top3 ?? null;
+
+  if (!answers || !top3) {
+    return { statusCode: 400, body: JSON.stringify({ error: 'Missing answers/top3' }) };
+  }
+
+  // Insert row bound to this user
+  const payload = {
+    user_id: user.id,                 // <— critical!
+    email:   user.email || null,
+    answers,
+    top3
+  };
+
+  const { error } = await supabaseAdmin
+    .from('results')
+    .insert(payload);
+
+  if (error) {
+    return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+  }
+
+  return { statusCode: 200, body: JSON.stringify({ ok: true }) };
 });
