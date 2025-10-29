@@ -1,47 +1,31 @@
 // netlify/functions/cors.js
-// CommonJS: require("./cors") returns the wrapper function.
+// Minimal CORS wrapper for Netlify Functions (ES modules)
 
-module.exports = function cors(fn) {
-  const chooseOrigin = (reqOrigin) => reqOrigin || "*";
-
+export function cors(handler) {
   return async (event, context) => {
-    const reqOrigin = event.headers?.origin || event.headers?.Origin || "";
-    const origin = chooseOrigin(reqOrigin);
+    const origin =
+      process.env.ALLOWED_ORIGIN || event.headers?.origin || "*";
+
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, X-Requested-With",
+      "Access-Control-Allow-Credentials": "true",
+      Vary: "Origin",
+    };
 
     // Preflight
     if (event.httpMethod === "OPTIONS") {
-      return {
-        statusCode: 204,
-        headers: {
-          "Access-Control-Allow-Origin": origin,
-          "Access-Control-Allow-Credentials": "true",
-          "Access-Control-Allow-Headers": "authorization, content-type",
-          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-          Vary: "Origin",
-        },
-        body: "",
-      };
+      return { statusCode: 200, headers: corsHeaders, body: "" };
     }
 
-    try {
-      const res = await fn(event, context);
-      const headers = Object.assign({}, res?.headers || {}, {
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Credentials": "true",
-        Vary: "Origin",
-      });
-      return { ...res, headers };
-    } catch (err) {
-      console.error("[CORS] handler error:", err);
-      return {
-        statusCode: 500,
-        headers: {
-          "Access-Control-Allow-Origin": origin,
-          "Access-Control-Allow-Credentials": "true",
-          Vary: "Origin",
-        },
-        body: JSON.stringify({ error: "Internal error" }),
-      };
-    }
+    const res = await handler(event, context);
+
+    return {
+      statusCode: res?.statusCode ?? 200,
+      headers: { ...(res?.headers || {}), ...corsHeaders },
+      body: res?.body ?? "",
+    };
   };
-};
+}
