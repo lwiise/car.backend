@@ -2,20 +2,21 @@
 import cors from "./cors.js";
 import { createClient } from "@supabase/supabase-js";
 
-// You MUST set these in Netlify env vars (Site settings -> Environment variables):
-// SUPABASE_URL                = https://zrlfkdxpqkhfusjktrey.supabase.co
-// SUPABASE_SERVICE_ROLE_KEY   = <your service_role key from Supabase>
+// You MUST have these set in Netlify environment vars:
+//   SUPABASE_URL = https://zrlfkdxpqkhfusjktrey.supabase.co
+//   SUPABASE_SERVICE_ROLE_KEY = <service_role key from Supabase>
+const SUPABASE_URL  = process.env.SUPABASE_URL;
+const SERVICE_KEY   = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-// Server-side Supabase client (admin privileges, not exposed to browser)
+// Server-side Supabase client (service role = full DB access)
+// DO NOT expose SERVICE_KEY to the browser.
 const adminSb = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false }
 });
 
+// core handler (will be wrapped with cors())
 async function coreHandler(event) {
-  // Allow only POST (OPTIONS is handled by cors.js automatically)
+  // only allow POST (OPTIONS handled by cors.js automatically)
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
@@ -24,7 +25,7 @@ async function coreHandler(event) {
     };
   }
 
-  // ----- 1. Check Authorization bearer token -----
+  // ---- 1. Read/validate bearer token from Authorization header ----
   const authHeader =
     event.headers?.authorization ||
     event.headers?.Authorization ||
@@ -39,7 +40,7 @@ async function coreHandler(event) {
     };
   }
 
-  // Validate token with Supabase Admin client
+  // Ask Supabase who this token belongs to
   const { data: userData, error: userErr } = await adminSb.auth.getUser(token);
   if (userErr || !userData?.user) {
     return {
@@ -51,11 +52,23 @@ async function coreHandler(event) {
 
   const authedUser = userData.user; // { id, email, ... }
 
-  // ----- 2. Parse body from client -----
-  let parsed;
+  // ---- 2. Parse request JSON ----
+  // Frontend should send:
+  // {
+  //   email,
+  //   name,
+  //   nickname,
+  //   dob,
+  //   gender,
+  //   country,
+  //   state,
+  //   answers,
+  //   top3
+  // }
+  let payload;
   try {
-    parsed = JSON.parse(event.body || "{}");
-  } catch (err) {
+    payload = JSON.parse(event.body || "{}");
+  } catch {
     return {
       statusCode: 400,
       headers: { "Content-Type": "application/json" },
@@ -63,51 +76,48 @@ async function coreHandler(event) {
     };
   }
 
-  // Expected from frontend:
-  // {
-  //   user_id,
-  //   email,
-  //   profile: { full_name, first_name, dob, gender, country, region },
-  //   picks,
-  //   answers
-  // }
   const {
-    user_id,
     email,
-    profile = {},
-    picks = [],
-    answers = {}
-  } = parsed;
-
-  const finalUserId = user_id || authedUser.id;
-  const finalEmail  = email    || authedUser.email;
-
-  const {
-    full_name,
-    first_name,
+    name,
+    nickname,
     dob,
     gender,
     country,
-    region
-  } = profile;
+    state,
+    answers = {},
+    top3 = []
+  } = payload;
 
-  // ----- 3. Upsert profile into "profiles" table -----
-  // Make sure these column names match your DB schema.
+  const finalUserId = authedUser.id;
+  const finalEmail  = email || authedUser.email;
+
+  // ---- 3. Upsert into profiles table ----
+  // This matches columns we THINK you actually have:
+  //   id (PK, uuid)
+  //   email
+  //   full_name
+  //   nickname
+  //   dob
+  //   gender
+  //   country
+  //   state
+  //
+  // If your column names are slightly different (e.g. "name" instead of "full_name"),
+  // change them here to match exactly what's in Supabase.
+  const profileRow = {
+    id: finalUserId,
+    email: finalEmail || null,
+    full_name: name || null,
+    nickname: nickname || null,
+    dob: dob || null,
+    gender: gender || null,
+    country: country || null,
+    state: state || null
+  };
+
   const { error: profileErr } = await adminSb
     .from("profiles")
-    .upsert(
-      {
-        id: finalUserId,
-        email: finalEmail,
-        full_name:  full_name  || null,
-        first_name: first_name || null,
-        dob:        dob        || null,
-        gender:     gender     || null,
-        country:    country    || null,
-        region:     region     || null
-      },
-      { onConflict: "id" } // adjust if your PK/unique key is different
-    );
+    .upsert(profileRow, { onConflict: "id" });
 
   if (profileErr) {
     return {
@@ -120,15 +130,20 @@ async function coreHandler(event) {
     };
   }
 
-  // ----- 4. Insert quiz result into "results" table -----
-  // Make sure table + columns match.
+  // ---- 4. Insert quiz result into results table ----
+  // results table should have:
+  //   user_id
+  //   top3 (JSON)
+  //   answers (JSON)
+  const resultRow = {
+    user_id: finalUserId,
+    top3: top3,
+    answers: answers
+  };
+
   const { error: resultErr } = await adminSb
     .from("results")
-    .insert({
-      user_id: finalUserId,
-      top3: picks,
-      answers
-    });
+    .insert(resultRow);
 
   if (resultErr) {
     return {
@@ -141,7 +156,7 @@ async function coreHandler(event) {
     };
   }
 
-  // ----- 5. Success -----
+  // ---- 5. Done ----
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
@@ -153,5 +168,5 @@ async function coreHandler(event) {
   };
 }
 
-// FINAL EXPORT: wrap with your cors()
+// Netlify entrypoint WITH CORS wrapper
 export const handler = cors(coreHandler);
