@@ -1,98 +1,157 @@
 // netlify/functions/profileUpsertCORS.js
-import cors from './cors.js';
-import { createClient } from '@supabase/supabase-js';
+import cors from "./cors.js";
+import { createClient } from "@supabase/supabase-js";
+
+// You MUST set these in Netlify env vars (Site settings -> Environment variables):
+// SUPABASE_URL                = https://zrlfkdxpqkhfusjktrey.supabase.co
+// SUPABASE_SERVICE_ROLE_KEY   = <your service_role key from Supabase>
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE; // service key (NOT anon)
+const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-async function handler(event) {
-  if (event.httpMethod !== 'POST') {
+// Server-side Supabase client (admin privileges, not exposed to browser)
+const adminSb = createClient(SUPABASE_URL, SERVICE_KEY, {
+  auth: { autoRefreshToken: false, persistSession: false }
+});
+
+async function coreHandler(event) {
+  // Allow only POST (OPTIONS is handled by cors.js automatically)
+  if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
-      body: JSON.stringify({ error: 'Method not allowed' })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Method Not Allowed" })
     };
   }
 
-  // auth
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  // ----- 1. Check Authorization bearer token -----
+  const authHeader =
+    event.headers?.authorization ||
+    event.headers?.Authorization ||
+    "";
+
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) {
     return {
       statusCode: 401,
-      body: JSON.stringify({ error: 'Missing bearer token' })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Missing bearer token" })
     };
   }
 
-  // user profile body
-  let payload;
+  // Validate token with Supabase Admin client
+  const { data: userData, error: userErr } = await adminSb.auth.getUser(token);
+  if (userErr || !userData?.user) {
+    return {
+      statusCode: 401,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Invalid or expired token" })
+    };
+  }
+
+  const authedUser = userData.user; // { id, email, ... }
+
+  // ----- 2. Parse body from client -----
+  let parsed;
   try {
-    payload = JSON.parse(event.body || '{}');
-  } catch {
+    parsed = JSON.parse(event.body || "{}");
+  } catch (err) {
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: 'Invalid JSON body' })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Bad JSON" })
     };
   }
 
-  // connect to supabase with service role (so we can upsert profile row)
-  const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false }
-  });
+  // Expected from frontend:
+  // {
+  //   user_id,
+  //   email,
+  //   profile: { full_name, first_name, dob, gender, country, region },
+  //   picks,
+  //   answers
+  // }
+  const {
+    user_id,
+    email,
+    profile = {},
+    picks = [],
+    answers = {}
+  } = parsed;
 
-  // we expect: { user_id, email, profile: {...}, picks: [...], answers: {...} }
-  const { user_id, email, profile, picks, answers } = payload;
+  const finalUserId = user_id || authedUser.id;
+  const finalEmail  = email    || authedUser.email;
 
-  if (!user_id || !email) {
-    return {
-      statusCode: 400,
-      body: JSON.stringify({ error: 'Missing user_id or email' })
-    };
-  }
+  const {
+    full_name,
+    first_name,
+    dob,
+    gender,
+    country,
+    region
+  } = profile;
 
-  // 1) upsert profile table
-  const { error: profileErr } = await sb
-    .from('profiles')
-    .upsert({
-      user_id,
-      email,
-      full_name: profile.full_name || null,
-      first_name: profile.first_name || null,
-      gender: profile.gender || null,
-      dob: profile.dob || null,
-      country: profile.country || null,
-      region: profile.region || null,
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'user_id' });
+  // ----- 3. Upsert profile into "profiles" table -----
+  // Make sure these column names match your DB schema.
+  const { error: profileErr } = await adminSb
+    .from("profiles")
+    .upsert(
+      {
+        id: finalUserId,
+        email: finalEmail,
+        full_name:  full_name  || null,
+        first_name: first_name || null,
+        dob:        dob        || null,
+        gender:     gender     || null,
+        country:    country    || null,
+        region:     region     || null
+      },
+      { onConflict: "id" } // adjust if your PK/unique key is different
+    );
 
   if (profileErr) {
-    console.error('profile upsert error', profileErr);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: 'profile upsert failed' })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Failed to upsert profile",
+        detail: profileErr.message
+      })
     };
   }
 
-  // 2) save latest quiz result (optional)
-  if (Array.isArray(picks) && picks.length) {
-    const { error: resultErr } = await sb
-      .from('results')
-      .insert([{
-        user_id,
-        email,
-        top3: picks,
-        answers,
-      }]);
+  // ----- 4. Insert quiz result into "results" table -----
+  // Make sure table + columns match.
+  const { error: resultErr } = await adminSb
+    .from("results")
+    .insert({
+      user_id: finalUserId,
+      top3: picks,
+      answers
+    });
 
-    if (resultErr) {
-      console.error('results insert error', resultErr);
-      // not fatal for the response, we'll just warn
-    }
+  if (resultErr) {
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Failed to save results",
+        detail: resultErr.message
+      })
+    };
   }
 
+  // ----- 5. Success -----
   return {
     statusCode: 200,
-    body: JSON.stringify({ ok: true })
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ok: true,
+      user_id: finalUserId,
+      email: finalEmail
+    })
   };
 }
 
-export const handler = cors(handler);
+// FINAL EXPORT: wrap with your cors()
+export const handler = cors(coreHandler);
