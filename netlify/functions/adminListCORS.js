@@ -7,14 +7,24 @@ import {
   isAllowedAdmin
 } from "./_supabase.js";
 
-// shape one row for the frontend table
+// choose the top summary safely no matter how it's named
+function grabSummary(row) {
+  return (
+    row.top_summary ??
+    row.top3 ??
+    row.top_3 ??
+    row.summary ??
+    ""
+  );
+}
+
+// turn DB rows into what the frontend expects
 function shapeRow(resultRow, profileMap) {
   const {
     id,
     created_at,
     user_id,
-    first_pick,
-    top_summary
+    first_pick
   } = resultRow || {};
 
   const prof = user_id ? profileMap[user_id] : null;
@@ -28,7 +38,7 @@ function shapeRow(resultRow, profileMap) {
     email: finalEmail,
     name: finalName,
     first_pick: first_pick || "—",
-    top_summary: top_summary || "—",
+    top_summary: grabSummary(resultRow) || "—",
     type: user_id ? "User" : "Guest"
   };
 }
@@ -38,24 +48,24 @@ export const handler = cors(async (event) => {
     return json(405, { error: "method_not_allowed" });
   }
 
-  // 1. auth / admin check
+  // 1. auth / admin gate
   const { user } = await getUserFromAuth(event);
   if (!isAllowedAdmin(user)) {
     return json(403, { error: "forbidden" });
   }
 
-  // 2. read request body
+  // 2. read filters from body
   const {
     page = 1,
     pageSize = 20,
     search = "",
     type = "all",        // "all" | "user" | "guest"
-    resultsOnly = true   // not used but kept for compatibility
+    resultsOnly = true   // kept for compatibility
   } = parseJSON(event.body);
 
   const supa = getAdminClient();
 
-  // pagination math
+  // pagination calc
   const from = (page - 1) * pageSize;
   const to   = from + pageSize - 1;
 
@@ -64,20 +74,20 @@ export const handler = cors(async (event) => {
   const rangeFrom   = wantsSearch ? 0 : from;
   const rangeTo     = wantsSearch ? (MAX_FETCH - 1) : to;
 
-  // base query using only columns we KNOW exist
+  // base query:
+  // NOTE: select("*") so we don't break on unknown columns
   let listReq = supa
     .from("quiz_results")
-    .select("id,created_at,user_id,first_pick,top_summary")
+    .select("*")
     .order("created_at", { ascending: false })
     .range(rangeFrom, rangeTo);
 
-  // filter by type
   if (type === "guest") {
     listReq = listReq.is("user_id", null);
   } else if (type === "user") {
     listReq = listReq.not("user_id", "is", null);
   }
-  // type === "all" -> no filter
+  // "all" → no filter
 
   const { data: resultRows, error: listErr } = await listReq;
   if (listErr) {
@@ -88,7 +98,7 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // build profileMap for all user_ids we saw
+  // build map user_id -> profile row
   const allUserIds = Array.from(
     new Set(
       resultRows
@@ -104,19 +114,19 @@ export const handler = cors(async (event) => {
       .select("id,email,name,nickname")
       .in("id", allUserIds);
 
-    if (profErr) {
-      console.warn("[adminListCORS] profErr:", profErr);
-    } else {
+    if (!profErr && Array.isArray(profRows)) {
       profileMap = Object.fromEntries(
         profRows.map(p => [p.id, p])
       );
+    } else if (profErr) {
+      console.warn("[adminListCORS] profErr:", profErr);
     }
   }
 
   // shape for frontend
   let shaped = resultRows.map(r => shapeRow(r, profileMap));
 
-  // in-memory search
+  // simple in-memory search
   if (wantsSearch) {
     const q = search.trim().toLowerCase();
     shaped = shaped.filter(row => {
@@ -129,7 +139,6 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // final slice if searching
   const paged = wantsSearch
     ? shaped.slice(from, from + pageSize)
     : shaped;
