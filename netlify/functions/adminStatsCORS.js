@@ -19,63 +19,63 @@ export const handler = cors(async (event) => {
 
   const {
     lastDays = 7,
-    type = "user" // "user" | "guest" | "all"
+    type = null  // null|"all"|"user"|"guest"
   } = parseJSON(event.body);
 
   const supa = getAdminClient();
 
-  const cutoffISO = new Date(
-    Date.now() - lastDays * 24*60*60*1000
-  ).toISOString();
-
-  // We'll pull quiz_results id, created_at, user_id and compute stats here
-  let q = supa
-    .from("quiz_results")
-    .select("id,created_at,user_id");
-
-  if (type === "guest") {
-    q = q.is("user_id", null);
-  } else if (type === "user") {
-    q = q.not("user_id", "is", null);
+  // helper to build base query with filters
+  function baseFilter(q, mode) {
+    if (mode === "guest") {
+      return q.is("user_id", null);
+    }
+    if (mode === "user") {
+      return q.not("user_id", "is", null);
+    }
+    // "all" or null -> no filter
+    return q;
   }
 
-  const { data: rows, error } = await q;
-  if (error) {
-    console.error("[adminStatsCORS] error:", error);
-    return json(500, {
-      error: "db_failed",
-      detail: error.message
-    });
-  }
+  // total count
+  {
+    let totalQ = supa
+      .from("quiz_results")
+      .select("id", { count: "exact", head: true });
 
-  // guests: just count rows where user_id is null
-  if (type === "guest") {
-    const totalGuests = rows.length;
-    const newGuests = rows.filter(r => (
-      r.created_at && r.created_at >= cutoffISO
-    )).length;
+    totalQ = baseFilter(totalQ, type || "all");
+
+    const { count: totalCount, error: totErr } = await totalQ;
+    if (totErr) {
+      console.error("[adminStatsCORS] totalErr:", totErr);
+      return json(500, {
+        error: "db_total_failed",
+        detail: totErr.message
+      });
+    }
+
+    // new count in the last X days
+    const cutoff = new Date(Date.now() - lastDays * 24 * 60 * 60 * 1000)
+      .toISOString();
+
+    let newQ = supa
+      .from("quiz_results")
+      .select("id,created_at", { count:"exact", head:true })
+      .gte("created_at", cutoff);
+
+    newQ = baseFilter(newQ, type || "all");
+
+    const { count: newCount, error: newErr } = await newQ;
+    if (newErr) {
+      console.error("[adminStatsCORS] newErr:", newErr);
+      return json(500, {
+        error: "db_new_failed",
+        detail: newErr.message
+      });
+    }
 
     return json(200, {
-      total: totalGuests,
-      new: newGuests
+      total: totalCount ?? 0,
+      new: newCount ?? 0
     });
   }
-
-  // users or all: dedupe by user_id
-  const signedRows = rows.filter(r => !!r.user_id);
-
-  const totalUserIds = new Set(signedRows.map(r => r.user_id));
-  const totalUsersCount = totalUserIds.size;
-
-  const newUserIds = new Set(
-    signedRows
-      .filter(r => r.created_at && r.created_at >= cutoffISO)
-      .map(r => r.user_id)
-  );
-  const newUsersCount = newUserIds.size;
-
-  return json(200, {
-    total: totalUsersCount,
-    new: newUsersCount
-  });
 });
