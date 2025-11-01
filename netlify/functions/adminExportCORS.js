@@ -7,12 +7,14 @@ import {
   isAllowedAdmin
 } from "./_supabase.js";
 
+/**
+ * Same shape idea as adminListCORS, but for CSV.
+ */
 function shapeRow(resultRow, profileMap) {
   const {
     id,
     created_at,
-    user_id,
-    top3
+    user_id
   } = resultRow || {};
 
   const prof = user_id ? profileMap[user_id] : null;
@@ -20,22 +22,11 @@ function shapeRow(resultRow, profileMap) {
   const finalEmail = prof?.email || "—";
   const finalName  = prof?.name || prof?.nickname || "—";
 
-  let first_pick = "—";
-  if (Array.isArray(top3) && top3.length > 0) {
-    const p = top3[0];
-    first_pick = `${p.brand || ""} ${p.model || ""}`.trim() || "—";
-  }
+  // can't read car picks columns yet
+  const first_pick  = "—";
+  const top_summary = "—";
 
-  let top_summary = "—";
-  if (Array.isArray(top3) && top3.length > 0) {
-    top_summary = top3
-      .slice(0,3)
-      .map(p => `${p.brand||""} ${p.model||""}`.trim())
-      .filter(Boolean)
-      .join(" • ") || "—";
-  }
-
-  const typeLabel = user_id ? "User" : "Guest";
+  const typeLabel   = user_id ? "User" : "Guest";
 
   return {
     id,
@@ -74,10 +65,10 @@ export const handler = cors(async (event) => {
 
   const supa = getAdminClient();
 
-  // pull ALL rows (not paged) so CSV is full
+  // grab all quiz_results rows (we'll JS-filter for CSV)
   let listReq = supa
     .from("quiz_results")
-    .select("id,created_at,user_id,top3")
+    .select("id,created_at,user_id")
     .order("created_at", { ascending: false });
 
   if (type === "guest") {
@@ -99,7 +90,7 @@ export const handler = cors(async (event) => {
     };
   }
 
-  // profile enrich
+  // build profile map
   const userIds = Array.from(
     new Set(
       resultRows
@@ -127,7 +118,7 @@ export const handler = cors(async (event) => {
   // shape rows
   let shaped = resultRows.map(r => shapeRow(r, profileMap));
 
-  // in-memory search filter (same as list)
+  // in-memory search
   const q = (search || "").trim().toLowerCase();
   if (q) {
     shaped = shaped.filter(row => {
@@ -139,7 +130,7 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // build CSV
+  // CSV build
   const header = [
     "id",
     "created_at",
