@@ -1,6 +1,7 @@
 // netlify/functions/_supabase.js
 import { createClient } from "@supabase/supabase-js";
 
+// ----- env -----
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -9,29 +10,25 @@ const SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE;
 
-// set who is allowed in the admin dashboard
+// <- put the emails that are allowed to view the admin dashboard
 export const ADMIN_EMAILS = [
-  "kkk1@gmail.com", // you
+  "kkk1@gmail.com"
 ];
 
 if (!SUPABASE_URL || !SERVICE_ROLE) {
   console.error(
-    "[_supabase] Missing Supabase env. " +
-    "SUPABASE_URL ok? " + !!SUPABASE_URL +
-    " SERVICE_ROLE ok? " + !!SERVICE_ROLE
+    "[_supabase] Missing SUPABASE_URL or SERVICE_ROLE env var"
   );
 }
 
+// full-access server client (service_role key)
 export function getAdminClient() {
-  if (!SUPABASE_URL || !SERVICE_ROLE) {
-    throw new Error("SUPABASE_URL or SERVICE_ROLE missing");
-  }
   return createClient(SUPABASE_URL, SERVICE_ROLE, {
-    auth: { persistSession: false },
+    auth: { persistSession: false }
   });
 }
 
-// safely parse the body
+// safe body parse
 export function parseJSON(body) {
   try {
     return body ? JSON.parse(body) : {};
@@ -40,7 +37,7 @@ export function parseJSON(body) {
   }
 }
 
-// read Authorization: Bearer <jwt> and resolve Supabase user
+// pull the supabase user from Authorization: Bearer <jwt>
 export async function getUserFromAuth(event) {
   const authHeader =
     event.headers?.authorization ||
@@ -59,14 +56,15 @@ export async function getUserFromAuth(event) {
   const { data, error } = await supa.auth.getUser(token);
 
   if (error) {
-    console.warn("[_supabase] auth.getUser error:", error);
+    console.warn("[_supabase] getUserFromAuth error:", error);
     return { token, user: null };
   }
-
   return { token, user: data?.user || null };
 }
 
+// check if this supabase user is allowed in admin
 export function isAllowedAdmin(user) {
-  if (!user || !user.email) return false;
-  return ADMIN_EMAILS.includes(user.email.toLowerCase());
+  if (!user) return false;
+  const email = (user.email || "").toLowerCase();
+  return ADMIN_EMAILS.some(x => x.toLowerCase() === email);
 }
