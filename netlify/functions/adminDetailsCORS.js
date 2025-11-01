@@ -1,92 +1,98 @@
 // netlify/functions/adminDetailsCORS.js
 import cors, { json } from "./cors.js";
-import {
-  getAdminClient,
-  getUserFromAuth,
-  parseJSON,
-  ADMIN_EMAILS
-} from "./_supabaseAdmin.js";
+import { getAdminClient, parseJSON } from "./_supabase.js";
 
-export const handler = cors(async function (event, context) {
-  const { user } = await getUserFromAuth(event);
-  if (!user) return json(401, { error: "unauthorized" });
-  if (!ADMIN_EMAILS.includes(user.email)) {
-    return json(403, { error: "forbidden" });
-  }
-
-  const body = parseJSON(event.body);
-  const email = body.email || "";
-  // body.type can be "user"/"guest", but we'll infer from data anyway
-
+export default cors(async (event) => {
   const supa = getAdminClient();
+  const body = parseJSON(event.body || "{}");
 
-  // 1. find profile by email
-  let profile = null;
-  if (email) {
-    const { data: profRow, error: profErr } = await supa
-      .from("profiles")
-      .select(
-        "user_id, full_name, first_name, nickname, name, email, gender, dob, country, state, created_at, updated_at"
-      )
-      .eq("email", email)
-      .maybeSingle();
-
-    if (profErr) {
-      console.warn("adminDetailsCORS profile err:", profErr);
-    }
-    profile = profRow || null;
+  const emailRaw = (body.email || "").trim().toLowerCase();
+  if (!emailRaw) {
+    // guest without email OR bad click
+    return json(200, {
+      profile: {},
+      meta: {},
+      picks: [],
+      answers: {},
+    });
   }
 
-  let userIdForResults = profile?.user_id || null;
+  // 1. find auth user by email
+  const { data: authUser, error: authErr } = await supa
+    .from("auth.users")
+    .select("id, email, created_at, updated_at")
+    .ilike("email", emailRaw)
+    .limit(1)
+    .maybeSingle();
 
-  // 2. find latest result row for that user (or fallback to any latest result)
-  let resultRow = null;
-
-  if (userIdForResults) {
-    const { data: resRows, error: resErr } = await supa
-      .from("results")
-      .select("id, created_at, top3, answers, user_id")
-      .eq("user_id", userIdForResults)
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (resErr) console.warn("adminDetailsCORS result err:", resErr);
-    resultRow = Array.isArray(resRows) && resRows[0] ? resRows[0] : null;
-  } else {
-    const { data: resRowsGuest, error: resErr2 } = await supa
-      .from("results")
-      .select("id, created_at, top3, answers, user_id")
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (resErr2) console.warn("adminDetailsCORS guest result err:", resErr2);
-    resultRow =
-      Array.isArray(resRowsGuest) && resRowsGuest[0]
-        ? resRowsGuest[0]
-        : null;
-
-    if (!userIdForResults) {
-      userIdForResults = resultRow?.user_id || null;
-    }
+  if (authErr) {
+    console.warn("adminDetailsCORS authErr", authErr);
   }
 
-  const picks = Array.isArray(resultRow?.top3) ? resultRow.top3 : [];
+  if (!authUser || !authUser.id) {
+    // no registered account that matches that email
+    return json(200, {
+      profile: {
+        email: emailRaw,
+      },
+      meta: { type: "Guest" },
+      picks: [],
+      answers: {},
+    });
+  }
+
+  const uid = authUser.id;
+
+  // 2. profile row (optional extra info you might be storing)
+  const { data: prof, error: profErr } = await supa
+    .from("profiles")
+    .select("id, full_name, nickname, country, state, gender, dob, created_at, updated_at")
+    .eq("id", uid)
+    .maybeSingle();
+
+  if (profErr) {
+    console.warn("adminDetailsCORS profErr", profErr);
+  }
+
+  // 3. latest quiz result for that user
+  const { data: resultRow, error: resErr } = await supa
+    .from("results")
+    .select("id, created_at, top3, answers, user_id")
+    .eq("user_id", uid)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (resErr) {
+    console.warn("adminDetailsCORS resErr", resErr);
+  }
+
+  const picks   = Array.isArray(resultRow?.top3) ? resultRow.top3 : [];
   const answers = resultRow?.answers || {};
 
-  const meta = {
-    user_id: userIdForResults || null,
-    type: resultRow?.user_id ? "User" : "Guest",
+  const profileObj = {
+    name:     prof?.full_name || prof?.nickname || authUser.email || "—",
+    email:    authUser.email || "—",
+    nickname: prof?.nickname || "—",
+    gender:   prof?.gender   || "—",
+    dob:      prof?.dob      || "—",
+    country:  prof?.country  || "—",
+    state:    prof?.state    || "—",
+    created_at: prof?.created_at || resultRow?.created_at || authUser.created_at || null,
+    updated_at: prof?.updated_at || authUser.updated_at || null,
+  };
+
+  const metaObj = {
+    type: "User",
+    user_id: uid,
+    created_at: resultRow?.created_at || null,
     top3_count: picks.length,
-    created_at:
-      resultRow?.created_at ||
-      profile?.created_at ||
-      null
   };
 
   return json(200, {
-    profile: profile || {},
-    meta,
+    profile: profileObj,
+    meta: metaObj,
     picks,
-    answers
+    answers,
   });
 });
