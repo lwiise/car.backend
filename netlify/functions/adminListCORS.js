@@ -1,56 +1,59 @@
 // netlify/functions/adminListCORS.js
 import cors, { json } from "./cors.js";
-import supaHelpers from "./_supabase.js";
-const { getAdminClient, parseJSON, getUserFromAuth } = supaHelpers;
+import {
+  getAdminClient,
+  parseJSON,
+  getUserFromAuth,
+} from "./_supabase.js";
 
 /**
- * Who is allowed to access the admin dashboard.
- * Put ALL admin emails here (the emails you use to log in with Supabase Auth).
+ * Allowed admin emails.
+ * You can set ADMIN_EMAILS in Netlify env like:
+ *   kkk1@gmail.com,otheradmin@domain.com
+ * If it's not set, fallback keeps your current email so you don't get locked out.
  */
-const ADMIN_EMAILS = ["kkk1@gmail.com"];
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "kkk1@gmail.com")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
 /**
- * Build per-email snapshots:
- * - collapse many quiz results from the same email into one row (latest result wins)
- * - figure out if this email is a "User" (signed up) or "Guest" (only guest data)
- * - precompute summary strings for UI
+ * Take raw quiz rows and group them per email.
+ * - If any row for that email is NOT a guest => treat the whole person as "User".
+ * - Otherwise they stay "Guest".
+ * - We collapse multiple quiz attempts into one snapshot.
  */
 function buildSnapshots(rawRows) {
-  // group rows by email (case-insensitive); fall back to a fake key if email is missing
   const groups = {};
 
   for (const row of rawRows) {
     const emailKey =
       (row.email && row.email.toLowerCase()) ||
-      (`guest-${row.id}`); // no email case (not ideal but prevents crash)
+      `guest-${row.id}`;
 
     if (!groups[emailKey]) {
       groups[emailKey] = {
         all: [],
-        latest: row,          // we'll keep first row as "latest" because we'll sort desc
+        latest: row, // newest first, we'll rely on order
         earliest_at: row.created_at,
-        hasSignedUp: !row.is_guest, // if any row is not guest, this will flip true
+        hasSignedUp: !row.is_guest,
       };
     }
 
     const g = groups[emailKey];
     g.all.push(row);
 
-    // track earliest time they ever appeared
+    // track earliest appearance time
     if (new Date(row.created_at) < new Date(g.earliest_at)) {
       g.earliest_at = row.created_at;
     }
 
-    // latest = most recent row. assume rawRows already sorted newest -> oldest
-    // so first push stays the newest, we do nothing
-
-    // if any row shows is_guest === false, treat them as signed up
+    // if any entry is a real user, mark whole group as User
     if (!row.is_guest) {
       g.hasSignedUp = true;
     }
   }
 
-  // turn each group into a single snapshot row for the UI
   const snapshots = [];
   for (const key in groups) {
     const g = groups[key];
@@ -58,19 +61,22 @@ function buildSnapshots(rawRows) {
 
     const top3 = Array.isArray(r.top3) ? r.top3 : [];
     const firstPickObj = top3[0] || {};
-    const firstPick =
+    const firstPickText =
       (firstPickObj.brand || firstPickObj.model)
         ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
-        : (r.first_pick || "—");
+        : r.first_pick || "—";
 
-    const topSummary =
+    const topSummaryText =
       top3
         .slice(0, 3)
-        .map(p => `${p.brand || ""} ${p.model || ""}`.trim())
+        .map(
+          (p) =>
+            `${p.brand || ""} ${p.model || ""}`.trim()
+        )
         .filter(Boolean)
-        .join(" • ")
-      || r.top_summary
-      || "—";
+        .join(" • ") ||
+      r.top_summary ||
+      "—";
 
     snapshots.push({
       email: r.email || "—",
@@ -82,12 +88,12 @@ function buildSnapshots(rawRows) {
         r.email ||
         "—",
       created_at: r.created_at,
-      first_pick: firstPick || "—",
-      top_summary: topSummary,
+      first_pick: firstPickText || "—",
+      top_summary: topSummaryText,
       top3,
       type: g.hasSignedUp ? "User" : "Guest",
 
-      // we also keep some extras that we reuse in details / stats
+      // extras used by stats/details logic
       all_rows: g.all,
       earliest_at: g.earliest_at,
       hasSignedUp: g.hasSignedUp,
@@ -99,27 +105,31 @@ function buildSnapshots(rawRows) {
 }
 
 /**
- * Filter by search and type.
- * - type can be "user", "guest", or null/"all".
- * - search needs >=2 chars.
+ * Apply type filter + search filter to the snapshots.
  */
 function filterSnapshots(snapshots, { search, type }) {
   let out = snapshots.slice();
 
+  // type filter
   if (type === "user") {
-    out = out.filter(x => x.type === "User");
+    out = out.filter((x) => x.type === "User");
   } else if (type === "guest") {
-    out = out.filter(x => x.type === "Guest");
+    out = out.filter((x) => x.type === "Guest");
   }
 
+  // search filter (min 2 chars)
   if (search && search.trim().length >= 2) {
     const needle = search.trim().toLowerCase();
-    out = out.filter(x => {
+    out = out.filter((x) => {
       return (
         (x.email || "").toLowerCase().includes(needle) ||
         (x.name || "").toLowerCase().includes(needle) ||
-        (x.first_pick || "").toLowerCase().includes(needle) ||
-        (x.top_summary || "").toLowerCase().includes(needle)
+        (x.first_pick || "")
+          .toLowerCase()
+          .includes(needle) ||
+        (x.top_summary || "")
+          .toLowerCase()
+          .includes(needle)
       );
     });
   }
@@ -130,22 +140,23 @@ function filterSnapshots(snapshots, { search, type }) {
 export default cors(async function handler(event) {
   // 1. auth check
   const { user } = await getUserFromAuth(event);
-  if (!user || !ADMIN_EMAILS.includes(user.email)) {
+  const emailLower = user?.email?.toLowerCase() || "";
+  if (!user || !ADMIN_EMAILS.includes(emailLower)) {
     return json(401, { error: "unauthorized" });
   }
 
-  // 2. parse body
+  // 2. read request body
   const body = parseJSON(event.body);
   const page = Number(body.page) || 1;
   const pageSize = Number(body.pageSize) || 20;
   const search = body.search || "";
   const type = body.type || null; // "user" | "guest" | null
-  // resultsOnly is ignored here because the frontend only shows results anyway
+  // body.resultsOnly can be ignored; UI only shows "results"
 
   const supa = getAdminClient();
 
-  // 3. fetch recent quiz result rows (newest first)
-  //    NOTE: update 'quiz_results' and column list to match your DB.
+  // 3. fetch quiz results
+  //    Adjust table/column names if yours differ.
   const { data, error } = await supa
     .from("quiz_results")
     .select(`
@@ -164,28 +175,31 @@ export default cors(async function handler(event) {
       answers
     `)
     .order("created_at", { ascending: false })
-    .limit(500); // grab a decent chunk, we'll group and paginate in memory
+    .limit(500);
 
   if (error) {
     console.error("adminListCORS select error:", error);
-    return json(500, { error: "db_error", detail: String(error.message || error) });
+    return json(500, {
+      error: "db_error",
+      detail: String(error.message || error),
+    });
   }
 
   // 4. collapse rows per email
   const snapshots = buildSnapshots(data || []);
 
-  // 5. apply filters (type + search)
+  // 5. filter by type + search
   const filtered = filterSnapshots(snapshots, { search, type });
 
-  // 6. paginate after filtering
+  // 6. paginate in-memory
   const start = (page - 1) * pageSize;
   const end = start + pageSize;
   const slice = filtered.slice(start, end);
   const hasMore = end < filtered.length;
 
-  // 7. shape response
+  // 7. shape for frontend table
   return json(200, {
-    items: slice.map(row => ({
+    items: slice.map((row) => ({
       email: row.email,
       name: row.name,
       created_at: row.created_at,
