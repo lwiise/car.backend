@@ -12,15 +12,13 @@ function shapeRow(resultRow, profileMap) {
     id,
     created_at,
     user_id,
-    email: guestEmail,
-    name: guestName,
     top3
   } = resultRow || {};
 
   const prof = user_id ? profileMap[user_id] : null;
 
-  const finalEmail = prof?.email || guestEmail || "—";
-  const finalName  = prof?.name  || prof?.nickname || guestName || "—";
+  const finalEmail = prof?.email || "—";
+  const finalName  = prof?.name || prof?.nickname || "—";
 
   let first_pick = "—";
   if (Array.isArray(top3) && top3.length > 0) {
@@ -37,16 +35,16 @@ function shapeRow(resultRow, profileMap) {
       .join(" • ") || "—";
   }
 
-  const type = user_id ? "User" : "Guest";
+  const typeLabel = user_id ? "User" : "Guest";
 
   return {
     id,
     created_at,
-    email: finalEmail,
     name: finalName,
+    email: finalEmail,
     first_pick,
     top_summary,
-    type
+    type: typeLabel
   };
 }
 
@@ -59,7 +57,6 @@ export const handler = cors(async (event) => {
     };
   }
 
-  // auth
   const { user } = await getUserFromAuth(event);
   if (!isAllowedAdmin(user)) {
     return {
@@ -77,23 +74,16 @@ export const handler = cors(async (event) => {
 
   const supa = getAdminClient();
 
-  // build filter same as in list
+  // pull ALL rows (not paged) so CSV is full
   let listReq = supa
     .from("quiz_results")
-    .select("id,created_at,user_id,email,name,top3")
+    .select("id,created_at,user_id,top3")
     .order("created_at", { ascending: false });
 
   if (type === "guest") {
     listReq = listReq.is("user_id", null);
   } else if (type === "user") {
     listReq = listReq.not("user_id", "is", null);
-  }
-
-  const querySearch = (search || "").trim();
-  if (querySearch) {
-    listReq = listReq.or(
-      `email.ilike.%${querySearch}%,name.ilike.%${querySearch}%`
-    );
   }
 
   const { data: resultRows, error: listErr } = await listReq;
@@ -109,12 +99,12 @@ export const handler = cors(async (event) => {
     };
   }
 
-  // gather profile info
+  // profile enrich
   const userIds = Array.from(
     new Set(
       resultRows
         .map(r => r.user_id)
-        .filter(v => !!v)
+        .filter(Boolean)
     )
   );
 
@@ -134,7 +124,20 @@ export const handler = cors(async (event) => {
     }
   }
 
-  const shaped = resultRows.map(r => shapeRow(r, profileMap));
+  // shape rows
+  let shaped = resultRows.map(r => shapeRow(r, profileMap));
+
+  // in-memory search filter (same as list)
+  const q = (search || "").trim().toLowerCase();
+  if (q) {
+    shaped = shaped.filter(row => {
+      const hay =
+        (row.name || "") + " " +
+        (row.email || "") + " " +
+        (row.top_summary || "");
+      return hay.toLowerCase().includes(q);
+    });
+  }
 
   // build CSV
   const header = [
@@ -147,28 +150,25 @@ export const handler = cors(async (event) => {
     "type"
   ];
 
+  const escVal = (v = "") => {
+    const s = String(v ?? "");
+    if (s.includes('"') || s.includes(",") || s.includes("\n")) {
+      return `"${s.replace(/"/g,'""')}"`;
+    }
+    return s;
+  };
+
   const csvLines = [
     header.join(","),
-    ...shaped.map(row => {
-      // escape commas/quotes
-      const escVal = (v="") => {
-        const s = String(v ?? "");
-        if (s.includes('"') || s.includes(",") || s.includes("\n")) {
-          return `"${s.replace(/"/g,'""')}"`;
-        }
-        return s;
-      };
-
-      return [
-        escVal(row.id),
-        escVal(row.created_at),
-        escVal(row.name),
-        escVal(row.email),
-        escVal(row.first_pick),
-        escVal(row.top_summary),
-        escVal(row.type)
-      ].join(",");
-    })
+    ...shaped.map(row => [
+      escVal(row.id),
+      escVal(row.created_at),
+      escVal(row.name),
+      escVal(row.email),
+      escVal(row.first_pick),
+      escVal(row.top_summary),
+      escVal(row.type),
+    ].join(","))
   ].join("\n");
 
   return {
