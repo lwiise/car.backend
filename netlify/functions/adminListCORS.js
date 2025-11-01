@@ -1,136 +1,142 @@
 // netlify/functions/adminListCORS.js
-const { cors } = require("./cors");
-const {
+import cors, { json } from "./cors.js";
+import {
   getAdminClient,
-  parseJSON,
   getUserFromAuth,
-} = require("./_supabase");
+  parseJSON,
+  ADMIN_EMAILS
+} from "./_supabaseAdmin.js";
 
-// OPTIONAL: lock access to specific admin emails
-// leave empty to allow any logged-in user for now
-const ADMIN_EMAILS = []; // e.g. ["louisanaskaroti@gmail.com"]
-
-module.exports = cors(async (event) => {
-  // --- auth check ---
+export const handler = cors(async function (event, context) {
+  // 1. auth / allowlist
   const { user } = await getUserFromAuth(event);
+
   if (!user) {
-    return {
-      statusCode: 401,
-      body: { error: "Unauthorized (no token)" },
-    };
+    return json(401, { error: "unauthorized" });
   }
-  if (ADMIN_EMAILS.length && !ADMIN_EMAILS.includes(user.email)) {
-    return {
-      statusCode: 403,
-      body: { error: "Forbidden (not admin)" },
-    };
+  if (!ADMIN_EMAILS.includes(user.email)) {
+    return json(403, { error: "forbidden" });
   }
 
-  const supa = getAdminClient();
+  // 2. read request body
   const body = parseJSON(event.body);
 
   const page = Number(body.page || 1);
   const pageSize = Number(body.pageSize || 20);
+  const type = body.type || null; // "user" | "guest" | null
+  const search = (body.search || "").toLowerCase().trim();
+  // body.resultsOnly is ignored for now but kept for compat
+
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
 
-  // We ignore search/type filters for now just to get you unblocked.
-  // You can add them later (ilike, etc).
-  const { data: resultsRows, error: resErr } = await supa
+  const supa = getAdminClient();
+
+  // 3. pull recent quiz results
+  let query = supa
     .from("results")
-    .select("id, created_at, top3, answers, user_id, user_email")
+    .select("id, created_at, user_id, top3, answers", { count: "exact" })
     .order("created_at", { ascending: false })
     .range(from, to);
 
-  if (resErr) {
-    console.error("adminListCORS results error:", resErr);
-    return {
-      statusCode: 500,
-      body: { error: "DB error loading results" },
-    };
+  // filter by type if requested
+  if (type === "user") {
+    query = query.not("user_id", "is", null);
+  } else if (type === "guest") {
+    query = query.is("user_id", null);
   }
 
-  // collect unique user_ids to join profiles
-  const userIds = [
-    ...new Set(
-      (resultsRows || [])
-        .map((r) => r.user_id)
-        .filter((id) => !!id)
-    ),
-  ];
+  const { data: rows, error } = await query;
 
+  if (error) {
+    console.error("adminListCORS results error:", error);
+    return json(500, {
+      error: "db_error",
+      detail: String(error.message || error)
+    });
+  }
+
+  // 4. fetch matching profiles in batch
+  const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
   let profilesById = {};
+
   if (userIds.length) {
-    const { data: profRows, error: profErr } = await supa
+    const { data: profs, error: pErr } = await supa
       .from("profiles")
       .select(
-        "user_id, email, name, nickname, full_name, user_name, is_guest, created_at"
+        "user_id, full_name, first_name, nickname, name, email, country, state, gender, dob, created_at, updated_at"
       )
       .in("user_id", userIds);
 
-    if (!profErr && Array.isArray(profRows)) {
-      for (const p of profRows) {
-        profilesById[p.user_id] = p;
-      }
-    } else if (profErr) {
-      console.warn("adminListCORS profiles join error:", profErr);
+    if (pErr) {
+      console.warn("adminListCORS profile error:", pErr);
+    } else {
+      profilesById = Object.fromEntries(
+        (profs || []).map(p => [p.user_id, p])
+      );
     }
   }
 
-  // shape rows for frontend
-  const items = (resultsRows || []).map((row) => {
-    const prof = profilesById[row.user_id] || {};
+  // 5. shape data for frontend rows
+  const items = rows.map(r => {
+    const prof = profilesById[r.user_id] || {};
 
-    // figure out display name
     const displayName =
-      prof.name ||
-      prof.nickname ||
       prof.full_name ||
-      prof.user_name ||
-      row.user_email ||
+      prof.first_name ||
+      prof.nickname ||
+      prof.name ||
       prof.email ||
-      "—";
+      "";
 
-    // main email
-    const emailVal =
-      prof.email || row.user_email || "—";
-
-    const firstPickObj = Array.isArray(row.top3)
-      ? row.top3[0]
-      : null;
-
-    const firstPickText = firstPickObj
-      ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
-      : "—";
-
-    const topSummary = Array.isArray(row.top3)
-      ? row.top3
-          .slice(0, 3)
-          .map(
-            (c) =>
-              `${c.brand || ""} ${c.model || ""}`.trim()
-          )
-          .filter(Boolean)
-          .join(" • ")
-      : "—";
+    const top3 = Array.isArray(r.top3) ? r.top3 : [];
+    const firstPick = top3[0]
+      ? `${top3[0].brand || ""} ${top3[0].model || ""}`.trim()
+      : "";
 
     return {
-      id: row.id,
-      created_at: row.created_at,
-      email: emailVal,
       name: displayName,
-      top3: row.top3 || [],
-      first_pick: firstPickText,
-      top_summary: topSummary,
-      type: prof.is_guest ? "Guest" : "User",
+      nickname: prof.nickname || null,
+      full_name: prof.full_name || null,
+      user_name: displayName,
+
+      email: prof.email || null,
+      user_email: prof.email || null,
+
+      created_at: r.created_at,
+      updated_at: prof.updated_at || r.created_at,
+
+      top3,
+      first_pick: firstPick,
+      type: r.user_id ? "User" : "Guest"
     };
   });
 
-  return {
-    statusCode: 200,
-    body: {
-      items,
-      hasMore: (resultsRows || []).length === pageSize,
-    },
-  };
+  // 6. apply search (server-side filter for "min 2 chars")
+  let filtered = items;
+  if (search && search.length >= 2) {
+    filtered = items.filter(it => {
+      const haystack = [
+        it.name,
+        it.email,
+        it.first_pick,
+        ...(Array.isArray(it.top3)
+          ? it.top3.map(
+              c =>
+                `${c.brand || ""} ${c.model || ""} ${c.reason || ""}`
+            )
+          : [])
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(search);
+    });
+  }
+
+  const hasMore = rows.length === pageSize;
+
+  return json(200, {
+    items: filtered,
+    hasMore
+  });
 });
