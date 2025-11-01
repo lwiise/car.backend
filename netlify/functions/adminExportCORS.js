@@ -2,207 +2,95 @@
 import cors from "./cors.js";
 import {
   getAdminClient,
-  parseJSON,
   getUserFromAuth,
+  parseJSON,
+  isAllowedAdmin,
 } from "./_supabase.js";
 
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "kkk1@gmail.com")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
-function buildSnapshots(rawRows) {
-  const groups = {};
-  for (const row of rawRows) {
-    const emailKey =
-      (row.email && row.email.toLowerCase()) ||
-      `guest-${row.id}`;
-
-    if (!groups[emailKey]) {
-      groups[emailKey] = {
-        latest: row,
-        hasSignedUp: !row.is_guest,
-      };
-    } else {
-      // if any record for this email is not guest => whole thing is "User"
-      if (!row.is_guest) {
-        groups[emailKey].hasSignedUp = true;
-      }
-    }
+/**
+ * Body matches adminListCORS:
+ * { search, type, resultsOnly }
+ *
+ * We respond with raw CSV text.
+ * The front-end treats it as a Blob and downloads "users.csv".
+ */
+async function handler(event) {
+  if (event.httpMethod !== "POST") {
+    return {
+      statusCode: 405,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Method not allowed" }),
+    };
   }
 
-  const out = [];
-  for (const key in groups) {
-    const g = groups[key];
-    const r = g.latest;
-    const top3 = Array.isArray(r.top3) ? r.top3 : [];
-
-    const firstPickObj = top3[0] || {};
-    const firstPickText =
-      (firstPickObj.brand || firstPickObj.model)
-        ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
-        : r.first_pick || "—";
-
-    const topSummaryText =
-      top3
-        .slice(0, 3)
-        .map(
-          (p) =>
-            `${p.brand || ""} ${p.model || ""}`.trim()
-        )
-        .filter(Boolean)
-        .join(" • ") ||
-      r.top_summary ||
-      "—";
-
-    out.push({
-      email: r.email || "—",
-      name:
-        r.name ||
-        r.nickname ||
-        r.full_name ||
-        r.user_name ||
-        r.email ||
-        "—",
-      created_at: r.created_at,
-      first_pick: firstPickText || "—",
-      top_summary: topSummaryText,
-      type: g.hasSignedUp ? "User" : "Guest",
-    });
-  }
-  return out;
-}
-
-function filterSnapshots(snapshots, { search, type }) {
-  let out = snapshots.slice();
-
-  if (type === "user") {
-    out = out.filter((x) => x.type === "User");
-  } else if (type === "guest") {
-    out = out.filter((x) => x.type === "Guest");
-  }
-
-  if (search && search.trim().length >= 2) {
-    const needle = search.trim().toLowerCase();
-    out = out.filter((x) => {
-      return (
-        (x.email || "").toLowerCase().includes(needle) ||
-        (x.name || "").toLowerCase().includes(needle) ||
-        (x.first_pick || "")
-          .toLowerCase()
-          .includes(needle) ||
-        (x.top_summary || "")
-          .toLowerCase()
-          .includes(needle)
-      );
-    });
-  }
-
-  return out;
-}
-
-function toCSV(rows) {
-  const header = [
-    "Email",
-    "Name",
-    "Created At",
-    "#1 Pick",
-    "Top-3 Summary",
-    "Type",
-  ];
-  const lines = [header.join(",")];
-
-  for (const r of rows) {
-    const cells = [
-      r.email || "",
-      r.name || "",
-      r.created_at || "",
-      r.first_pick || "",
-      r.top_summary || "",
-      r.type || "",
-    ].map((val) => {
-      const v = (val || "")
-        .toString()
-        .replace(/"/g, '""');
-      return `"${v}"`;
-    });
-    lines.push(cells.join(","));
-  }
-
-  return lines.join("\n");
-}
-
-export default cors(async function handler(event) {
   // 1. auth
   const { user } = await getUserFromAuth(event);
-  const emailLower = user?.email?.toLowerCase() || "";
-  if (!user || !ADMIN_EMAILS.includes(emailLower)) {
+  if (!user || !isAllowedAdmin(user.email)) {
     return {
       statusCode: 401,
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ error: "unauthorized" }),
     };
   }
 
-  // 2. read body
+  // 2. body
   const body = parseJSON(event.body);
-  const search = body.search || "";
-  const type = body.type || null; // "user"|"guest"|null
+  const search      = (body.search || "").trim();
+  const type        = body.type || null;
+  const resultsOnly = !!body.resultsOnly;
 
   const supa = getAdminClient();
 
-  // 3. fetch quiz data
-  const { data, error } = await supa
-    .from("quiz_results")
-    .select(`
-      id,
-      created_at,
-      email,
-      name,
-      nickname,
-      full_name,
-      user_name,
-      is_guest,
-      top3,
-      first_pick,
-      top_summary
-    `)
-    .order("created_at", { ascending: false })
-    .limit(1000);
+  // 3. YOUR REAL CSV LOGIC HERE
+  //
+  // You already had an export function.
+  // Paste that logic here:
+  //  - query Supabase for ALL rows (not paginated)
+  //  - apply same filters (search/type/resultsOnly)
+  //  - build CSV string with headers like:
+  //      "email,name,created_at,first_pick,top3...\n"
+  //    + rows...
+  //
+  // Return that string as body with "text/csv".
+  //
+  // Example skeleton:
+  //
+  // const { data: rows, error } = await supa
+  //   .from("YOUR_VIEW_OR_TABLE")
+  //   .select("*")
+  //   .ilike("searchable_text_col", `%${search}%`)
+  //   .eq("user_type_col", type) // if provided
+  //   .order("created_at", { ascending: false });
+  //
+  // if (error) throw error;
+  //
+  // let csv = "email,name,created_at,first_pick,top3,type\n";
+  // for (const r of rows) {
+  //   const topSummary = Array.isArray(r.top3)
+  //     ? r.top3.map(p=>`${p.brand||""} ${p.model||""}`.trim()).join(" | ")
+  //     : "";
+  //   csv += [
+  //     r.email ?? "",
+  //     r.name ?? "",
+  //     r.created_at ?? "",
+  //     r.first_pick ?? "",
+  //     topSummary,
+  //     r.type ?? ""
+  //   ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(",") + "\n";
+  // }
 
-  if (error) {
-    console.error(
-      "adminExportCORS select error:",
-      error
-    );
-    return {
-      statusCode: 500,
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        error: "db_error",
-        detail: String(error.message || error),
-      }),
-    };
-  }
-
-  // 4. collapse + filter
-  const snaps = buildSnapshots(data || []);
-  const filtered = filterSnapshots(snaps, { search, type });
-
-  // 5. CSV
-  const csv = toCSV(filtered);
+  // ---------- PLACEHOLDER ----------
+  const csv = "email,name,created_at,first_pick,top3,type\n";
 
   return {
     statusCode: 200,
     headers: {
+      // cors() wrapper will still inject Access-Control-Allow-*
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition":
-        'attachment; filename="users.csv"',
+      "Content-Disposition": 'attachment; filename="users.csv"',
     },
     body: csv,
   };
-});
+}
+
+export const handler = cors(handler);
