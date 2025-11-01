@@ -2,68 +2,59 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * Helper to read from multiple possible env names.
- * (People name these differently sometimes.)
+ * ENV SETUP
+ * ----------
+ * Netlify will inject these from your dashboard env vars.
+ * We try a couple keys so it also works locally.
  */
-function envOr(...keys) {
-  for (const k of keys) {
-    const v = process.env[k];
-    if (v) return v;
-  }
-  return undefined;
-}
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL;
 
-// pull secrets from Netlify env
-const SUPABASE_URL = envOr(
-  "SUPABASE_URL",
-  "NEXT_PUBLIC_SUPABASE_URL"
-);
-
-const SERVICE_ROLE = envOr(
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "SUPABASE_SERVICE_ROLE"
-);
+const SERVICE_ROLE =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE;
 
 /**
- * Who is allowed to access admin endpoints.
- * Preferred: set ADMIN_EMAILS in Netlify env to
- * "admin1@email.com,admin2@email.com"
- * Fallback: hardcode your own so you don't get locked out.
+ * WHO IS ALLOWED TO SEE ADMIN DASHBOARD
+ * ------------------------------------
+ * put your real admin emails here.
+ * these MUST match the email on the Supabase auth user that logs in.
  */
-export const ADMIN_EMAILS = (
-  process.env.ADMIN_EMAILS || "kkk1@gmail.com"
-)
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+export const ADMIN_EMAILS = [
+  "kkk1@gmail.com",
+];
 
-// safety check (visible in Netlify logs if misconfigured)
+/**
+ * safety log in case env is missing
+ */
 if (!SUPABASE_URL || !SERVICE_ROLE) {
   console.error(
-    "Missing Supabase env vars. " +
+    "❌ Missing Supabase env vars. " +
     "SUPABASE_URL:", !!SUPABASE_URL,
     "SERVICE_ROLE:", !!SERVICE_ROLE
   );
 }
 
 /**
- * Create a full-access Supabase client using the service role key.
- * We explicitly disable persisting any session on the server.
+ * getAdminClient()
+ * ----------------
+ * returns a SERVICE-ROLE Supabase client (full DB access).
+ * we use it in Netlify functions ONLY, never expose this to the browser.
  */
 export function getAdminClient() {
   if (!SUPABASE_URL || !SERVICE_ROLE) {
-    throw new Error(
-      "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE in env."
-    );
+    throw new Error("Missing SUPABASE_URL or SERVICE_ROLE env.");
   }
-
   return createClient(SUPABASE_URL, SERVICE_ROLE, {
     auth: { persistSession: false },
   });
 }
 
 /**
- * Safely parse JSON from the Lambda body.
+ * parseJSON()
+ * -----------
+ * safely parse event.body
  */
 export function parseJSON(body) {
   try {
@@ -74,9 +65,10 @@ export function parseJSON(body) {
 }
 
 /**
- * Pull Bearer token from Authorization header,
- * then ask Supabase who that token belongs to.
- * Returns { token, user }.
+ * getUserFromAuth(event)
+ * ----------------------
+ * reads Authorization: Bearer <jwt>
+ * then asks Supabase to resolve that JWT to a user
  */
 export async function getUserFromAuth(event) {
   const authHeader =
@@ -102,6 +94,17 @@ export async function getUserFromAuth(event) {
 
   return {
     token,
-    user: data?.user || null
+    user: data?.user || null,
   };
+}
+
+/**
+ * isAllowedAdmin(email)
+ * ---------------------
+ * helper to check if the signed-in Supabase user
+ * is allowed to view admin endpoints.
+ */
+export function isAllowedAdmin(email) {
+  if (!email) return false;
+  return ADMIN_EMAILS.includes(email);
 }
