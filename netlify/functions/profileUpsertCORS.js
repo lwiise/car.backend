@@ -1,78 +1,42 @@
 // netlify/functions/profileUpsertCORS.js
-import cors from "./cors.js";
-import { createClient } from "@supabase/supabase-js";
+import cors, { json } from "./cors.js";
+import {
+  getAdminClient,
+  parseJSON,
+  getUserFromAuth,
+} from "./_supabase.js";
 
-// These MUST be set in Netlify → Site settings → Environment variables:
-const SUPABASE_URL  = process.env.SUPABASE_URL;
-const SERVICE_KEY   = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function firstPickFromTop3(top3) {
+  if (!Array.isArray(top3) || top3.length === 0) return null;
+  const c0 = top3[0] || {};
+  const label = [c0.brand, c0.model].filter(Boolean).join(" ").trim();
+  return label || null;
+}
 
-// Server-side Supabase client with service role key.
-// (Never expose SERVICE_KEY to the browser.)
-const adminSb = createClient(SUPABASE_URL, SERVICE_KEY, {
-  auth: { autoRefreshToken: false, persistSession: false }
-});
+function summaryFromTop3(top3) {
+  if (!Array.isArray(top3)) return null;
+  return top3
+    .slice(0, 3)
+    .map(c =>
+      [c.brand, c.model].filter(Boolean).join(" ").trim()
+    )
+    .filter(Boolean)
+    .join(" • ");
+}
 
-async function coreHandler(event) {
-  // Only POST is allowed for this function (OPTIONS is handled in cors.js)
+export const handler = cors(async (event) => {
   if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Method Not Allowed" })
-    };
+    return json(405, { error: "method_not_allowed" });
   }
 
-  // ---- 1. Read bearer token from Authorization header ----
-  const authHeader =
-    event.headers?.authorization ||
-    event.headers?.Authorization ||
-    "";
-
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-  if (!token) {
-    return {
-      statusCode: 401,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Missing bearer token" })
-    };
+  // who's calling?
+  const { user } = await getUserFromAuth(event);
+  if (!user) {
+    return json(401, { error: "unauthorized" });
   }
+  const userId = user.id;
 
-  // Validate token with Supabase
-  const { data: userData, error: userErr } = await adminSb.auth.getUser(token);
-  if (userErr || !userData?.user) {
-    return {
-      statusCode: 401,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Invalid or expired token" })
-    };
-  }
-
-  const authedUser = userData.user; // { id, email, ... }
-
-  // ---- 2. Parse incoming JSON ----
-  // Frontend sends:
-  // {
-  //   email,
-  //   name,
-  //   nickname,
-  //   dob,
-  //   gender,
-  //   country,
-  //   state,
-  //   answers,
-  //   top3
-  // }
-  let payload;
-  try {
-    payload = JSON.parse(event.body || "{}");
-  } catch {
-    return {
-      statusCode: 400,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Bad JSON" })
-    };
-  }
-
+  // body from the browser
   const {
     email,
     name,
@@ -81,90 +45,70 @@ async function coreHandler(event) {
     gender,
     country,
     state,
-    answers = {},
-    top3 = []
-  } = payload;
+    answers,
+    top3
+  } = parseJSON(event.body);
 
-  const finalUserId = authedUser.id;
-  const finalEmail  = email || authedUser.email || null;
+  const supa = getAdminClient();
 
-  // ---- 3. Try to upsert into profiles table ----
-  // We DON'T know your exact column names (Supabase is telling us first_name
-  // and full_name do NOT exist), so we'll only write the safest columns:
-  //   id
-  //   email
-  //
-  // If your table doesn't even have `email`, that's fine — we'll catch the error
-  // and continue anyway.
-  //
-  // IMPORTANT: we do NOT fail the request anymore if this upsert errors.
-  try {
-    const minimalProfileRow = {
-      id: finalUserId,
-      email: finalEmail
-    };
+  // 1. upsert profile
+  // profiles table is assumed:
+  // id (uuid, PK = auth user id)
+  // email text
+  // name text
+  // nickname text
+  // gender text
+  // dob date
+  // country text
+  // state text
+  // created_at timestamptz default now()
+  // updated_at timestamptz
+  const { error: upErr } = await supa
+    .from("profiles")
+    .upsert([{
+      id: userId,
+      email,
+      name,
+      nickname,
+      gender,
+      dob,
+      country,
+      state,
+      updated_at: new Date().toISOString()
+    }], { onConflict: "id" });
 
-    // attempt upsert; if columns don't match, Supabase will throw
-    const { error: profileErr } = await adminSb
-      .from("profiles")
-      .upsert(minimalProfileRow, { onConflict: "id" });
-
-    if (profileErr) {
-      console.warn("profiles upsert warning:", profileErr.message);
-      // we intentionally DO NOT return 500 here
-    }
-
-    // (Optional) If you later add columns for name, nickname, dob, gender, etc,
-    // you can extend minimalProfileRow with those exact column names and it
-    // will start saving them automatically.
-    //
-    // Example in the future:
-    // minimalProfileRow.nickname = nickname;
-    // minimalProfileRow.dob = dob;
-    // ...but ONLY after you confirm those columns actually exist in Supabase.
-  } catch (err) {
-    console.warn("profiles upsert threw:", err);
-    // still keep going
+  if (upErr) {
+    console.error("[profileUpsert] profile upsert error:", upErr);
+    return json(500, {
+      error: "profile_upsert_failed",
+      detail: upErr.message
+    });
   }
 
-  // ---- 4. Insert quiz results into results table ----
-  // results table should have (at least):
-  //   user_id (uuid)
-  //   top3 (json)
-  //   answers (json)
-  const resultRow = {
-    user_id: finalUserId,
-    top3: top3,
-    answers: answers
-  };
+  // 2. insert quiz_results row
+  // quiz_results table is assumed:
+  // id serial/bigint/uuid
+  // created_at timestamptz default now()
+  // user_id uuid (nullable)
+  // first_pick text
+  // top_summary text
+  // answers jsonb
+  const { error: insErr } = await supa
+    .from("quiz_results")
+    .insert([{
+      user_id: userId,
+      first_pick: firstPickFromTop3(top3),
+      top_summary: summaryFromTop3(top3),
+      answers: answers || {}
+    }]);
 
-  const { error: resultErr } = await adminSb
-    .from("results")
-    .insert(resultRow);
-
-  if (resultErr) {
-    // THIS we do care about, because saving the quiz is the main point
-    return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: "Failed to save results",
-        detail: resultErr.message
-      })
-    };
+  if (insErr) {
+    console.error("[profileUpsert] quiz_results insert error:", insErr);
+    return json(500, {
+      error: "quiz_insert_failed",
+      detail: insErr.message
+    });
   }
 
-  // ---- 5. Success ----
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ok: true,
-      user_id: finalUserId,
-      email: finalEmail
-    })
-  };
-}
-
-// export wrapped handler (adds CORS + preflight handling)
-export const handler = cors(coreHandler);
+  return json(200, { ok: true });
+});
