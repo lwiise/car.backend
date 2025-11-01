@@ -1,92 +1,147 @@
 // netlify/functions/adminDetailsCORS.js
 import cors, { json } from "./cors.js";
-import { getAdminClient, parseJSON } from "./_supabase.js";
+import supaHelpers from "./_supabase.js";
+const { getAdminClient, parseJSON, getUserFromAuth } = supaHelpers;
 
-export default cors(async (event) => {
-  const supa = getAdminClient();
-  const body = parseJSON(event.body || "{}");
+const ADMIN_EMAILS = ["kkk1@gmail.com"];
 
-  const emailRaw = (body.email || "").trim().toLowerCase();
-  if (!emailRaw) {
-    // guest without email OR bad click
-    return json(200, {
-      profile: {},
-      meta: {},
-      picks: [],
-      answers: {},
-    });
+export default cors(async function handler(event) {
+  // 1. auth
+  const { user } = await getUserFromAuth(event);
+  if (!user || !ADMIN_EMAILS.includes(user.email)) {
+    return json(401, { error: "unauthorized" });
   }
 
-  // 1. find auth user by email
-  const { data: authUser, error: authErr } = await supa
-    .from("auth.users")
-    .select("id, email, created_at, updated_at")
-    .ilike("email", emailRaw)
-    .limit(1)
-    .maybeSingle();
+  // 2. body
+  const body = parseJSON(event.body);
+  // frontend sends { email, type }
+  const email = (body.email || "").trim();
+  // const dtype = body.type || "user"; // could be useful if you ever want to branch
 
-  if (authErr) {
-    console.warn("adminDetailsCORS authErr", authErr);
-  }
-
-  if (!authUser || !authUser.id) {
-    // no registered account that matches that email
+  if (!email || email === "—") {
+    // Guest with literally no email saved -> we can't look them up.
     return json(200, {
       profile: {
-        email: emailRaw,
+        email: "—",
       },
-      meta: { type: "Guest" },
+      meta: {
+        type: "Guest",
+        user_id: "—",
+        top3_count: 0,
+      },
       picks: [],
       answers: {},
     });
   }
 
-  const uid = authUser.id;
+  const supa = getAdminClient();
 
-  // 2. profile row (optional extra info you might be storing)
-  const { data: prof, error: profErr } = await supa
-    .from("profiles")
-    .select("id, full_name, nickname, country, state, gender, dob, created_at, updated_at")
-    .eq("id", uid)
-    .maybeSingle();
-
-  if (profErr) {
-    console.warn("adminDetailsCORS profErr", profErr);
-  }
-
-  // 3. latest quiz result for that user
-  const { data: resultRow, error: resErr } = await supa
-    .from("results")
-    .select("id, created_at, top3, answers, user_id")
-    .eq("user_id", uid)
+  // 3. get the most recent quiz result(s) for this email
+  const { data: resultsData, error: resErr } = await supa
+    .from("quiz_results")
+    .select(`
+      id,
+      created_at,
+      updated_at,
+      email,
+      name,
+      nickname,
+      full_name,
+      user_name,
+      user_id,
+      is_guest,
+      country,
+      state,
+      gender,
+      dob,
+      top3,
+      answers
+    `)
+    .eq("email", email)
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(5);
 
   if (resErr) {
-    console.warn("adminDetailsCORS resErr", resErr);
+    console.error("adminDetailsCORS quiz_results error:", resErr);
+    return json(500, { error: "db_error", detail: String(resErr.message || resErr) });
   }
 
-  const picks   = Array.isArray(resultRow?.top3) ? resultRow.top3 : [];
-  const answers = resultRow?.answers || {};
+  const mostRecent = resultsData?.[0] || null;
+  const isSignedUp = resultsData?.some(r => !r.is_guest);
 
-  const profileObj = {
-    name:     prof?.full_name || prof?.nickname || authUser.email || "—",
-    email:    authUser.email || "—",
-    nickname: prof?.nickname || "—",
-    gender:   prof?.gender   || "—",
-    dob:      prof?.dob      || "—",
-    country:  prof?.country  || "—",
-    state:    prof?.state    || "—",
-    created_at: prof?.created_at || resultRow?.created_at || authUser.created_at || null,
-    updated_at: prof?.updated_at || authUser.updated_at || null,
+  // build picks array for UI (use most recent result's top3)
+  const picks = Array.isArray(mostRecent?.top3)
+    ? mostRecent.top3.slice(0, 3).map(p => ({
+        brand: p.brand || "",
+        model: p.model || "",
+        reason: p.reason || "",
+      }))
+    : [];
+
+  // answers from the most recent quiz attempt
+  const answers = mostRecent?.answers || {};
+
+  // 4. try to load profile row (if you have "profiles" table)
+  //    If you don't have this table, you can delete this whole section and
+  //    just build `profileObj` from mostRecent.
+  let profileRow = null;
+  try {
+    const { data: profData, error: profErr } = await supa
+      .from("profiles")
+      .select(`
+        id,
+        email,
+        name,
+        nickname,
+        full_name,
+        user_name,
+        gender,
+        dob,
+        country,
+        state,
+        created_at,
+        updated_at
+      `)
+      .eq("email", email)
+      .limit(1)
+      .maybeSingle(); // Netlify env might not support .single(), so we'll safe-check below
+
+    if (!profErr) {
+      profileRow = profData || null;
+    } else {
+      console.warn("profiles lookup error:", profErr.message || profErr);
+    }
+  } catch (err) {
+    // swallow profile lookup issues so Details still works
+    console.warn("profiles table not found / error:", err);
+  }
+
+  // final profile object for frontend
+  const profileObj = profileRow || {
+    email: mostRecent?.email || email,
+    name:
+      mostRecent?.name ||
+      mostRecent?.nickname ||
+      mostRecent?.full_name ||
+      mostRecent?.user_name ||
+      mostRecent?.email ||
+      "—",
+    nickname: mostRecent?.nickname || "—",
+    gender: mostRecent?.gender || "—",
+    dob: mostRecent?.dob || null,
+    country: mostRecent?.country || "—",
+    state: mostRecent?.state || "—",
+    created_at: mostRecent?.created_at || null,
+    updated_at: mostRecent?.updated_at || null,
+    user_id: mostRecent?.user_id || mostRecent?.id || null,
   };
 
+  // meta block for the UI "Metadata" card
   const metaObj = {
-    type: "User",
-    user_id: uid,
-    created_at: resultRow?.created_at || null,
-    top3_count: picks.length,
+    type: isSignedUp ? "User" : "Guest",
+    top3_count: picks.length || 0,
+    user_id: profileObj.user_id || profileObj.id || mostRecent?.user_id || "—",
+    created_at: mostRecent?.created_at || null,
   };
 
   return json(200, {
