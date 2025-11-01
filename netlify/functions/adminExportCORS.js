@@ -1,137 +1,185 @@
 // netlify/functions/adminExportCORS.js
-import cors, { json } from "./cors.js";
-import {
-  getAdminClient,
-  getUserFromAuth,
-  parseJSON,
-  ADMIN_EMAILS
-} from "./_supabaseAdmin.js";
+import cors from "./cors.js";
+import supaHelpers from "./_supabase.js";
+const { getAdminClient, parseJSON, getUserFromAuth } = supaHelpers;
 
-function csvEscape(v) {
-  if (v == null) return "";
-  const s = String(v).replace(/"/g, '""');
-  if (s.search(/("|,|\n)/) >= 0) return `"${s}"`;
-  return s;
+const ADMIN_EMAILS = ["kkk1@gmail.com"];
+
+function buildSnapshots(rawRows) {
+  const groups = {};
+  for (const row of rawRows) {
+    const emailKey =
+      (row.email && row.email.toLowerCase()) ||
+      (`guest-${row.id}`);
+
+    if (!groups[emailKey]) {
+      groups[emailKey] = {
+        all: [],
+        latest: row,
+        hasSignedUp: !row.is_guest,
+      };
+    }
+    const g = groups[emailKey];
+    g.all.push(row);
+    if (!row.is_guest) {
+      g.hasSignedUp = true;
+    }
+  }
+
+  const snapshots = [];
+  for (const key in groups) {
+    const g = groups[key];
+    const r = g.latest;
+    const top3 = Array.isArray(r.top3) ? r.top3 : [];
+    const firstPickObj = top3[0] || {};
+    const firstPick =
+      (firstPickObj.brand || firstPickObj.model)
+        ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
+        : (r.first_pick || "—");
+
+    const topSummary =
+      top3
+        .slice(0, 3)
+        .map(p => `${p.brand || ""} ${p.model || ""}`.trim())
+        .filter(Boolean)
+        .join(" • ")
+      || r.top_summary
+      || "—";
+
+    snapshots.push({
+      email: r.email || "—",
+      name:
+        r.name ||
+        r.nickname ||
+        r.full_name ||
+        r.user_name ||
+        r.email ||
+        "—",
+      created_at: r.created_at,
+      first_pick: firstPick || "—",
+      top_summary: topSummary,
+      type: g.hasSignedUp ? "User" : "Guest",
+    });
+  }
+  return snapshots;
 }
 
-export const handler = cors(async function (event, context) {
-  const { user } = await getUserFromAuth(event);
-  if (!user) {
-    return {
-      statusCode: 401,
-      headers: { "Content-Type": "text/plain" },
-      body: "unauthorized"
-    };
-  }
-  if (!ADMIN_EMAILS.includes(user.email)) {
-    return {
-      statusCode: 403,
-      headers: { "Content-Type": "text/plain" },
-      body: "forbidden"
-    };
-  }
-
-  const body = parseJSON(event.body);
-  const type = body.type || null;
-  const search = (body.search || "").toLowerCase().trim();
-
-  // we'll just dump the most recent ~200 rows
-  const pageSize = 200;
-
-  const supa = getAdminClient();
-
-  let query = supa
-    .from("results")
-    .select("id, created_at, user_id, top3, answers")
-    .order("created_at", { ascending: false })
-    .range(0, pageSize - 1);
+function filterSnapshots(snapshots, { search, type }) {
+  let out = snapshots.slice();
 
   if (type === "user") {
-    query = query.not("user_id", "is", null);
+    out = out.filter(x => x.type === "User");
   } else if (type === "guest") {
-    query = query.is("user_id", null);
+    out = out.filter(x => x.type === "Guest");
   }
 
-  const { data: rows, error } = await query;
-  if (error) {
-    console.error("adminExportCORS:", error);
-    return json(500, { error: "db_error" });
-  }
-
-  const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
-  let profilesById = {};
-
-  if (userIds.length) {
-    const { data: profs } = await supa
-      .from("profiles")
-      .select(
-        "user_id, full_name, first_name, nickname, name, email, country, state, gender, dob, created_at, updated_at"
-      )
-      .in("user_id", userIds);
-
-    profilesById = Object.fromEntries(
-      (profs || []).map(p => [p.user_id, p])
-    );
-  }
-
-  // shape into flat CSV rows
-  let items = rows.map(r => {
-    const prof = profilesById[r.user_id] || {};
-
-    const displayName =
-      prof.full_name ||
-      prof.first_name ||
-      prof.nickname ||
-      prof.name ||
-      prof.email ||
-      "";
-
-    const top3 = Array.isArray(r.top3) ? r.top3 : [];
-    const firstPick = top3[0]
-      ? `${top3[0].brand || ""} ${top3[0].model || ""}`.trim()
-      : "";
-    const top3Flat = top3
-      .map(c => `${c.brand || ""} ${c.model || ""}`.trim())
-      .join(" | ");
-
-    return {
-      name: displayName,
-      email: prof.email || "",
-      created_at: r.created_at || "",
-      first_pick: firstPick,
-      top3: top3Flat,
-      type: r.user_id ? "User" : "Guest"
-    };
-  });
-
-  // server-side search filter for CSV export
-  if (search && search.length >= 2) {
-    items = items.filter(it => {
-      const hay = `${it.name} ${it.email} ${it.first_pick} ${it.top3}`.toLowerCase();
-      return hay.includes(search);
+  if (search && search.trim().length >= 2) {
+    const needle = search.trim().toLowerCase();
+    out = out.filter(x => {
+      return (
+        (x.email || "").toLowerCase().includes(needle) ||
+        (x.name || "").toLowerCase().includes(needle) ||
+        (x.first_pick || "").toLowerCase().includes(needle) ||
+        (x.top_summary || "").toLowerCase().includes(needle)
+      );
     });
   }
 
-  // build CSV string
-  const header = ["name", "email", "created_at", "#1_pick", "top3", "type"];
-  const lines = [
-    header.join(","),
-    ...items.map(it =>
-      [
-        csvEscape(it.name),
-        csvEscape(it.email),
-        csvEscape(it.created_at),
-        csvEscape(it.first_pick),
-        csvEscape(it.top3),
-        csvEscape(it.type)
-      ].join(",")
-    )
+  return out;
+}
+
+function toCSV(rows) {
+  // basic CSV generator
+  const header = [
+    "Email",
+    "Name",
+    "Created At",
+    "#1 Pick",
+    "Top-3 Summary",
+    "Type"
   ];
-  const csv = lines.join("\n");
+  const lines = [header.join(",")];
+
+  for (const r of rows) {
+    const cells = [
+      r.email || "",
+      r.name || "",
+      r.created_at || "",
+      r.first_pick || "",
+      r.top_summary || "",
+      r.type || ""
+    ].map(val => {
+      // escape quotes
+      const v = (val || "").toString().replace(/"/g, '""');
+      return `"${v}"`;
+    });
+    lines.push(cells.join(","));
+  }
+
+  return lines.join("\n");
+}
+
+export default cors(async function handler(event) {
+  // 1. auth
+  const { user } = await getUserFromAuth(event);
+  if (!user || !ADMIN_EMAILS.includes(user.email)) {
+    return {
+      statusCode: 401,
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ error: "unauthorized" })
+    };
+  }
+
+  // 2. body
+  const body = parseJSON(event.body);
+  const search = body.search || "";
+  const type = body.type || null;
+
+  const supa = getAdminClient();
+
+  // 3. fetch data
+  const { data, error } = await supa
+    .from("quiz_results")
+    .select(`
+      id,
+      created_at,
+      email,
+      name,
+      nickname,
+      full_name,
+      user_name,
+      is_guest,
+      top3,
+      first_pick,
+      top_summary
+    `)
+    .order("created_at", { ascending: false })
+    .limit(1000);
+
+  if (error) {
+    console.error("adminExportCORS select error:", error);
+    return {
+      statusCode: 500,
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ error: "db_error", detail: String(error.message || error) })
+    };
+  }
+
+  // 4. group + filter
+  const snaps = buildSnapshots(data || []);
+  const filtered = filterSnapshots(snaps, { search, type });
+
+  // 5. build CSV
+  const csv = toCSV(filtered);
 
   return {
     statusCode: 200,
     headers: {
+      // important: CSV download headers
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": 'attachment; filename="users.csv"'
     },
