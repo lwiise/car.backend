@@ -1,140 +1,140 @@
 // netlify/functions/adminExportCORS.js
-const { cors } = require("./cors");
-const {
+import cors, { json } from "./cors.js";
+import {
   getAdminClient,
   getUserFromAuth,
   parseJSON,
-} = require("./_supabase");
+  ADMIN_EMAILS
+} from "./_supabaseAdmin.js";
 
-const ADMIN_EMAILS = []; // tighten later
-
-function toCSV(rows) {
-  if (!rows || !rows.length) return "email,name,created_at,first_pick,top3\n";
-
-  const esc = (val) => {
-    if (val == null) return "";
-    const s = String(val).replace(/"/g, '""');
-    return `"${s}"`;
-  };
-
-  const header = ["email", "name", "created_at", "first_pick", "top3"];
-  const lines = [
-    header.join(","),
-    ...rows.map((r) =>
-      [
-        esc(r.email),
-        esc(r.name),
-        esc(r.created_at),
-        esc(r.first_pick),
-        esc(r.top3_summary),
-      ].join(",")
-    ),
-  ];
-  return lines.join("\n");
+function csvEscape(v) {
+  if (v == null) return "";
+  const s = String(v).replace(/"/g, '""');
+  if (s.search(/("|,|\n)/) >= 0) return `"${s}"`;
+  return s;
 }
 
-module.exports = cors(async (event) => {
-  // auth
+export const handler = cors(async function (event, context) {
   const { user } = await getUserFromAuth(event);
   if (!user) {
     return {
       statusCode: 401,
-      body: { error: "Unauthorized (no token)" },
+      headers: { "Content-Type": "text/plain" },
+      body: "unauthorized"
     };
   }
-  if (ADMIN_EMAILS.length && !ADMIN_EMAILS.includes(user.email)) {
+  if (!ADMIN_EMAILS.includes(user.email)) {
     return {
       statusCode: 403,
-      body: { error: "Forbidden (not admin)" },
+      headers: { "Content-Type": "text/plain" },
+      body: "forbidden"
     };
   }
+
+  const body = parseJSON(event.body);
+  const type = body.type || null;
+  const search = (body.search || "").toLowerCase().trim();
+
+  // we'll just dump the most recent ~200 rows
+  const pageSize = 200;
 
   const supa = getAdminClient();
 
-  // pull (for example) last 200 results
-  const { data: resultsRows, error: resErr } = await supa
+  let query = supa
     .from("results")
-    .select("id, created_at, top3, user_id, user_email")
+    .select("id, created_at, user_id, top3, answers")
     .order("created_at", { ascending: false })
-    .limit(200);
+    .range(0, pageSize - 1);
 
-  if (resErr) {
-    console.error("adminExportCORS results error:", resErr);
-    return {
-      statusCode: 500,
-      body: { error: "DB error loading results" },
-    };
+  if (type === "user") {
+    query = query.not("user_id", "is", null);
+  } else if (type === "guest") {
+    query = query.is("user_id", null);
   }
 
-  // join profiles for nicer name/email
-  const userIds = [
-    ...new Set(
-      (resultsRows || [])
-        .map((r) => r.user_id)
-        .filter(Boolean)
-    ),
-  ];
+  const { data: rows, error } = await query;
+  if (error) {
+    console.error("adminExportCORS:", error);
+    return json(500, { error: "db_error" });
+  }
+
+  const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
   let profilesById = {};
+
   if (userIds.length) {
-    const { data: profRows } = await supa
+    const { data: profs } = await supa
       .from("profiles")
-      .select("user_id, email, name, nickname, full_name, user_name")
+      .select(
+        "user_id, full_name, first_name, nickname, name, email, country, state, gender, dob, created_at, updated_at"
+      )
       .in("user_id", userIds);
-    if (Array.isArray(profRows)) {
-      for (const p of profRows) profilesById[p.user_id] = p;
-    }
+
+    profilesById = Object.fromEntries(
+      (profs || []).map(p => [p.user_id, p])
+    );
   }
 
-  const flatRows = (resultsRows || []).map((row) => {
-    const prof = profilesById[row.user_id] || {};
+  // shape into flat CSV rows
+  let items = rows.map(r => {
+    const prof = profilesById[r.user_id] || {};
+
     const displayName =
-      prof.name ||
-      prof.nickname ||
       prof.full_name ||
-      prof.user_name ||
-      row.user_email ||
+      prof.first_name ||
+      prof.nickname ||
+      prof.name ||
       prof.email ||
-      "—";
+      "";
 
-    const emailVal = prof.email || row.user_email || "—";
-
-    const firstPickObj = Array.isArray(row.top3)
-      ? row.top3[0]
-      : null;
-    const firstPickText = firstPickObj
-      ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
+    const top3 = Array.isArray(r.top3) ? r.top3 : [];
+    const firstPick = top3[0]
+      ? `${top3[0].brand || ""} ${top3[0].model || ""}`.trim()
       : "";
-
-    const topSummary = Array.isArray(row.top3)
-      ? row.top3
-          .slice(0, 3)
-          .map(
-            (c) =>
-              `${c.brand || ""} ${c.model || ""}`.trim()
-          )
-          .filter(Boolean)
-          .join(" / ")
-      : "";
+    const top3Flat = top3
+      .map(c => `${c.brand || ""} ${c.model || ""}`.trim())
+      .join(" | ");
 
     return {
-      email: emailVal,
       name: displayName,
-      created_at: row.created_at,
-      first_pick: firstPickText,
-      top3_summary: topSummary,
+      email: prof.email || "",
+      created_at: r.created_at || "",
+      first_pick: firstPick,
+      top3: top3Flat,
+      type: r.user_id ? "User" : "Guest"
     };
   });
 
-  const csv = toCSV(flatRows);
+  // server-side search filter for CSV export
+  if (search && search.length >= 2) {
+    items = items.filter(it => {
+      const hay = `${it.name} ${it.email} ${it.first_pick} ${it.top3}`.toLowerCase();
+      return hay.includes(search);
+    });
+  }
 
-  // return CSV. our cors() wrapper will merge headers,
-  // but we override Content-Type + Content-Disposition here.
+  // build CSV string
+  const header = ["name", "email", "created_at", "#1_pick", "top3", "type"];
+  const lines = [
+    header.join(","),
+    ...items.map(it =>
+      [
+        csvEscape(it.name),
+        csvEscape(it.email),
+        csvEscape(it.created_at),
+        csvEscape(it.first_pick),
+        csvEscape(it.top3),
+        csvEscape(it.type)
+      ].join(",")
+    )
+  ];
+  const csv = lines.join("\n");
+
   return {
     statusCode: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="users.csv"',
+      "Content-Disposition": 'attachment; filename="users.csv"'
     },
-    body: csv,
+    body: csv
   };
 });
