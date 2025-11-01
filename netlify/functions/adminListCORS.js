@@ -2,106 +2,164 @@
 import cors, { json } from "./cors.js";
 import {
   getAdminClient,
-  getUserFromAuth,
   parseJSON,
-  isAllowedAdmin,
+  getUserFromAuth,
+  isAllowedAdmin
 } from "./_supabase.js";
 
-/**
- * Body the frontend sends:
- * {
- *   page,
- *   pageSize,
- *   search,
- *   type,          // "user" | "guest" | null
- *   resultsOnly    // boolean
- * }
- *
- * Frontend expects:
- * {
- *   items: [ { id, created_at, email, name, first_pick, top_summary, top3, type }, ... ],
- *   hasMore: true/false
- * }
- */
-async function handler(event) {
+function shapeRow(resultRow, profileMap) {
+  const {
+    id,
+    created_at,
+    user_id,
+    email: guestEmail,
+    name: guestName,
+    top3
+  } = resultRow || {};
+
+  const prof = user_id ? profileMap[user_id] : null;
+
+  const finalEmail = prof?.email || guestEmail || "—";
+  const finalName  = prof?.name  || prof?.nickname || guestName || "—";
+
+  let first_pick = "—";
+  if (Array.isArray(top3) && top3.length > 0) {
+    const p = top3[0];
+    first_pick = `${p.brand || ""} ${p.model || ""}`.trim() || "—";
+  }
+
+  let top_summary = "—";
+  if (Array.isArray(top3) && top3.length > 0) {
+    top_summary = top3
+      .slice(0,3)
+      .map(p => `${p.brand||""} ${p.model||""}`.trim())
+      .filter(Boolean)
+      .join(" • ") || "—";
+  }
+
+  const type = user_id ? "User" : "Guest";
+
+  return {
+    id,
+    created_at,
+    email: finalEmail,
+    name: finalName,
+    first_pick,
+    top_summary,
+    top3,
+    type
+  };
+}
+
+export const handler = cors(async (event) => {
   if (event.httpMethod !== "POST") {
-    return json(405, { error: "Method not allowed" });
+    return json(405, { error: "method_not_allowed" });
   }
 
-  // 1. auth check
+  // auth check
   const { user } = await getUserFromAuth(event);
-  if (!user || !isAllowedAdmin(user.email)) {
-    return json(401, { error: "unauthorized" });
+  if (!isAllowedAdmin(user)) {
+    return json(403, { error: "forbidden" });
   }
 
-  // 2. parse body
-  const body = parseJSON(event.body);
-  const page      = Number(body.page ?? 1);
-  const pageSize  = Number(body.pageSize ?? 20);
-  const search    = (body.search || "").trim();
-  const type      = body.type || null; // "user" | "guest" | null
-  const resultsOnly = !!body.resultsOnly;
+  // read body
+  const {
+    page = 1,
+    pageSize = 20,
+    search = "",
+    type = "user",           // "user", "guest", or null/"all"
+    resultsOnly = true       // we keep this param just in case frontend sends it
+  } = parseJSON(event.body);
 
-  // 3. get supabase service client
   const supa = getAdminClient();
 
-  // 4. build pagination range
+  // build base filter on quiz_results
+  // - user_id IS NULL  => guests
+  // - user_id NOT NULL => users
+  // - no filter        => all
+  const filters = [];
+  if (type === "guest") {
+    filters.push("user_id.is.null");          // PostgREST syntax
+  } else if (type === "user") {
+    filters.push("user_id.not.is.null");
+  }
+
+  // basic ilike search on email, name, and also any car text in top3[].brand/model/reason
+  // NOTE: Supabase .or() expects "col.ilike.*query*,col2.ilike.*query*"
+  // We'll just match name/email for now because it's reliable.
+  const doSearch = (search || "").trim();
+  const querySearch = doSearch !== "" ? doSearch : null;
+
+  // pagination math
   const from = (page - 1) * pageSize;
   const to   = from + pageSize - 1;
 
-  // 5. RUN YOUR REAL QUERY HERE
-  //
-  // This should basically do what your old code did:
-  //  - pull latest quiz submissions / users
-  //  - filter by `search` if provided (email, name, car, etc.)
-  //  - filter by `type` ("user" vs "guest") if provided
-  //  - order by created_at DESC
-  //  - limit by [from, to]
-  //
-  // Then map rows into:
-  // {
-  //   id,
-  //   created_at,
-  //   email,
-  //   name,
-  //   first_pick,
-  //   top_summary,     // string like "Car1 • Car2 • Car3"
-  //   top3,            // array of { brand, model, reason }
-  //   type: "User" | "Guest"
-  // }
-  //
-  // EXAMPLE SHAPE (replace with your real query):
-  //
-  // const { data: rows, error } = await supa
-  //   .from("YOUR_VIEW_OR_TABLE")
-  //   .select("*")
-  //   .ilike("searchable_text_col", `%${search}%`)         // only if search provided
-  //   .eq("user_type_col", type)                           // only if type provided
-  //   .order("created_at", { ascending: false })
-  //   .range(from, to);
-  //
-  // if (error) throw error;
-  //
-  // const items = rows.map(r => ({
-  //   id: r.id,
-  //   created_at: r.created_at,
-  //   email: r.email,
-  //   name: r.name,
-  //   first_pick: r.first_pick,
-  //   top_summary: r.top_summary,
-  //   top3: r.top3,
-  //   type: r.type // "User" | "Guest"
-  // }));
-  //
-  // const hasMore = rows.length === pageSize;
-  //
-  // return json(200, { items, hasMore });
+  // 1. pull rows from quiz_results
+  // We select columns we actually use.
+  let listReq = supa
+    .from("quiz_results")
+    .select("id,created_at,user_id,email,name,top3")
+    .order("created_at", { ascending: false })
+    .range(from, to);
 
-  // ---------- PLACEHOLDER ----------
-  // remove this block once you paste your real query logic
-  const items = [];
-  const hasMore = false;
-  return json(200, { items, hasMore });
-}
+  // apply filters
+  for (const f of filters) {
+    // translate our filter strings into supabase-js calls
+    if (f === "user_id.is.null") {
+      listReq = listReq.is("user_id", null);
+    } else if (f === "user_id.not.is.null") {
+      listReq = listReq.not("user_id", "is", null);
+    }
+  }
 
-export const handler = cors(handler);
+  if (querySearch) {
+    // we try to match either stored guest email/name OR future profile email/name.
+    listReq = listReq.or(
+      `email.ilike.%${querySearch}%,name.ilike.%${querySearch}%`
+    );
+  }
+
+  const { data: resultRows, error: listErr } = await listReq;
+  if (listErr) {
+    console.error("[adminListCORS] listErr:", listErr);
+    return json(500, { error: "db_list_failed", detail: listErr.message });
+  }
+
+  // collect distinct user_ids so we can enrich with profiles
+  const userIds = Array.from(
+    new Set(
+      resultRows
+        .map(r => r.user_id)
+        .filter(v => !!v)
+    )
+  );
+
+  let profileMap = {};
+  if (userIds.length > 0) {
+    const { data: profRows, error: profErr } = await supa
+      .from("profiles")
+      .select(
+        "id,email,name,nickname,gender,dob,country,state,created_at,updated_at"
+      )
+      .in("id", userIds);
+
+    if (profErr) {
+      console.warn("[adminListCORS] profErr:", profErr);
+    } else {
+      profileMap = Object.fromEntries(
+        profRows.map(p => [p.id, p])
+      );
+    }
+  }
+
+  // final shaped rows for frontend table
+  const shaped = resultRows.map(r => shapeRow(r, profileMap));
+
+  // "hasMore": true if we filled the full pageSize
+  const hasMore = resultRows.length === pageSize;
+
+  return json(200, {
+    items: shaped,
+    hasMore
+  });
+});
