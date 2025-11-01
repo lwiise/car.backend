@@ -1,66 +1,54 @@
 // netlify/functions/adminStatsCORS.js
-const { cors } = require("./cors");
-const {
+import cors, { json } from "./cors.js";
+import {
   getAdminClient,
-  parseJSON,
   getUserFromAuth,
-} = require("./_supabase");
+  parseJSON,
+  ADMIN_EMAILS
+} from "./_supabaseAdmin.js";
 
-const ADMIN_EMAILS = []; // same story as above
-
-module.exports = cors(async (event) => {
-  // --- auth check ---
+export const handler = cors(async function (event, context) {
   const { user } = await getUserFromAuth(event);
-  if (!user) {
-    return {
-      statusCode: 401,
-      body: { error: "Unauthorized (no token)" },
-    };
+  if (!user) return json(401, { error: "unauthorized" });
+  if (!ADMIN_EMAILS.includes(user.email)) {
+    return json(403, { error: "forbidden" });
   }
-  if (ADMIN_EMAILS.length && !ADMIN_EMAILS.includes(user.email)) {
-    return {
-      statusCode: 403,
-      body: { error: "Forbidden (not admin)" },
-    };
-  }
+
+  const body = parseJSON(event.body);
+  const lastDays = Number(body.lastDays || 7);
+  const type = body.type || null;
 
   const supa = getAdminClient();
-  const body = parseJSON(event.body || "{}");
-  const lastDays = Number(body.lastDays || 7);
 
+  // --- total count ---
+  let totalQ = supa
+    .from("results")
+    .select("id, user_id, created_at", { count: "exact", head: true });
+
+  if (type === "user") totalQ = totalQ.not("user_id", "is", null);
+  if (type === "guest") totalQ = totalQ.is("user_id", null);
+
+  const { count: totalCount, error: totalErr } = await totalQ;
+  if (totalErr) console.error("adminStatsCORS totalErr:", totalErr);
+
+  // --- new in last X days ---
   const sinceISO = new Date(
     Date.now() - lastDays * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  // total = count of rows in `results`
-  const {
-    count: totalCount,
-    error: totalErr,
-  } = await supa
+  let newQ = supa
     .from("results")
-    .select("id", { count: "exact", head: true });
-
-  // new in last X days
-  const {
-    count: newCount,
-    error: newErr,
-  } = await supa
-    .from("results")
-    .select("id", { count: "exact", head: true })
+    .select("id, user_id, created_at", { count: "exact", head: true })
     .gte("created_at", sinceISO);
 
-  if (totalErr) {
-    console.warn("adminStatsCORS totalErr:", totalErr);
-  }
-  if (newErr) {
-    console.warn("adminStatsCORS newErr:", newErr);
-  }
+  if (type === "user") newQ = newQ.not("user_id", "is", null);
+  if (type === "guest") newQ = newQ.is("user_id", null);
 
-  return {
-    statusCode: 200,
-    body: {
-      total: totalErr ? 0 : totalCount || 0,
-      new: newErr ? 0 : newCount || 0,
-    },
-  };
+  const { count: newCount, error: newErr } = await newQ;
+  if (newErr) console.error("adminStatsCORS newErr:", newErr);
+
+  return json(200, {
+    total: totalErr ? null : totalCount ?? null,
+    new: newErr ? null : newCount ?? null
+  });
 });
