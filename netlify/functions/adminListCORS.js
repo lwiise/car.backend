@@ -7,20 +7,14 @@ import {
   isAllowedAdmin
 } from "./_supabase.js";
 
-/**
- * Turn one quiz_results row + optional profile info
- * into what the frontend table expects.
- *
- * NOTE:
- * We are NOT using quiz_results.top3 or answers anymore,
- * because those columns don't exist in your DB (confirmed by 500).
- * We'll just send placeholders for first_pick and top_summary for now.
- */
+// shape one row for the frontend table
 function shapeRow(resultRow, profileMap) {
   const {
     id,
     created_at,
-    user_id
+    user_id,
+    first_pick,
+    top_summary
   } = resultRow || {};
 
   const prof = user_id ? profileMap[user_id] : null;
@@ -28,22 +22,14 @@ function shapeRow(resultRow, profileMap) {
   const finalEmail = prof?.email || "—";
   const finalName  = prof?.name || prof?.nickname || "—";
 
-  // we can't read car picks yet (column doesn't exist),
-  // so just placeholders for now:
-  const first_pick  = "—";
-  const top_summary = "—";
-
-  const typeLabel   = user_id ? "User" : "Guest";
-
   return {
     id,
     created_at,
     email: finalEmail,
     name: finalName,
-    first_pick,
-    top_summary,
-    top3: [],         // placeholder, keeps frontend happy
-    type: typeLabel
+    first_pick: first_pick || "—",
+    top_summary: top_summary || "—",
+    type: user_id ? "User" : "Guest"
   };
 }
 
@@ -52,7 +38,7 @@ export const handler = cors(async (event) => {
     return json(405, { error: "method_not_allowed" });
   }
 
-  // 1. auth check
+  // 1. auth / admin check
   const { user } = await getUserFromAuth(event);
   if (!isAllowedAdmin(user)) {
     return json(403, { error: "forbidden" });
@@ -63,40 +49,35 @@ export const handler = cors(async (event) => {
     page = 1,
     pageSize = 20,
     search = "",
-    type = "user",           // "user" | "guest" | "all"
-    resultsOnly = true       // kept for compatibility
+    type = "all",        // "all" | "user" | "guest"
+    resultsOnly = true   // not used but kept for compatibility
   } = parseJSON(event.body);
 
   const supa = getAdminClient();
-
-  const querySearch = (search || "").trim().toLowerCase();
-  const wantsSearch = querySearch.length > 0;
 
   // pagination math
   const from = (page - 1) * pageSize;
   const to   = from + pageSize - 1;
 
-  // if searching, grab up to 1000 rows and filter in JS
-  const MAX_FETCH = 1000;
-  const rangeFrom = wantsSearch ? 0 : from;
-  const rangeTo   = wantsSearch ? (MAX_FETCH - 1) : to;
+  const wantsSearch = (search || "").trim().length > 0;
+  const MAX_FETCH   = 1000;
+  const rangeFrom   = wantsSearch ? 0 : from;
+  const rangeTo     = wantsSearch ? (MAX_FETCH - 1) : to;
 
-  // build base query ONLY with columns we know exist
+  // base query using only columns we KNOW exist
   let listReq = supa
     .from("quiz_results")
-    .select("id,created_at,user_id")
+    .select("id,created_at,user_id,first_pick,top_summary")
     .order("created_at", { ascending: false })
     .range(rangeFrom, rangeTo);
 
-  // filter "Users" vs "Guests"
+  // filter by type
   if (type === "guest") {
-    // guests: user_id IS NULL
     listReq = listReq.is("user_id", null);
   } else if (type === "user") {
-    // signed users: user_id NOT NULL
     listReq = listReq.not("user_id", "is", null);
   }
-  // "all" -> no extra filter
+  // type === "all" -> no filter
 
   const { data: resultRows, error: listErr } = await listReq;
   if (listErr) {
@@ -107,8 +88,8 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // pull all distinct user_ids we saw (signed users only)
-  const userIds = Array.from(
+  // build profileMap for all user_ids we saw
+  const allUserIds = Array.from(
     new Set(
       resultRows
         .map(r => r.user_id)
@@ -116,13 +97,12 @@ export const handler = cors(async (event) => {
     )
   );
 
-  // build profile map for email/name
   let profileMap = {};
-  if (userIds.length > 0) {
+  if (allUserIds.length > 0) {
     const { data: profRows, error: profErr } = await supa
       .from("profiles")
       .select("id,email,name,nickname")
-      .in("id", userIds);
+      .in("id", allUserIds);
 
     if (profErr) {
       console.warn("[adminListCORS] profErr:", profErr);
@@ -133,22 +113,23 @@ export const handler = cors(async (event) => {
     }
   }
 
-  // shape rows for frontend
+  // shape for frontend
   let shaped = resultRows.map(r => shapeRow(r, profileMap));
 
-  // in-memory search: name/email/top_summary
-  // (top_summary is "—" for now but we keep it for future)
+  // in-memory search
   if (wantsSearch) {
+    const q = search.trim().toLowerCase();
     shaped = shaped.filter(row => {
       const hay =
         (row.name || "") + " " +
         (row.email || "") + " " +
+        (row.first_pick || "") + " " +
         (row.top_summary || "");
-      return hay.toLowerCase().includes(querySearch);
+      return hay.toLowerCase().includes(q);
     });
   }
 
-  // final page cut
+  // final slice if searching
   const paged = wantsSearch
     ? shaped.slice(from, from + pageSize)
     : shaped;
