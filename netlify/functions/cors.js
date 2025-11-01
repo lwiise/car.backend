@@ -7,7 +7,6 @@ const ALLOWED_ORIGINS = [
   "http://localhost:3000"
 ];
 
-// helper to normalize function return -> Netlify response
 function normalizeResult(result) {
   if (!result || typeof result !== "object") {
     return { statusCode: 200, body: result ?? "" };
@@ -15,13 +14,11 @@ function normalizeResult(result) {
   return result;
 }
 
-// MAIN WRAPPER
 export default function cors(handler) {
   return async function(event, context) {
     const origin = event.headers?.origin || "";
     const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : "*";
 
-    // CORS preflight
     if (event.httpMethod === "OPTIONS") {
       return {
         statusCode: 200,
@@ -36,7 +33,6 @@ export default function cors(handler) {
       };
     }
 
-    // run actual logic
     let result;
     try {
       result = await handler(event, context);
@@ -55,7 +51,6 @@ export default function cors(handler) {
       };
     }
 
-    // attach CORS headers no matter what
     const { statusCode = 200, headers = {}, body = "" } =
       normalizeResult(result);
 
@@ -78,7 +73,6 @@ export default function cors(handler) {
   };
 }
 
-// sugar: easy JSON response from inside handlers
 export function json(statusCode, obj) {
   return {
     statusCode,
