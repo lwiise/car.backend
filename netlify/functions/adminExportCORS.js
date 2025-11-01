@@ -1,52 +1,61 @@
 // netlify/functions/adminExportCORS.js
 import cors from "./cors.js";
-import supaHelpers from "./_supabase.js";
-const { getAdminClient, parseJSON, getUserFromAuth } = supaHelpers;
+import {
+  getAdminClient,
+  parseJSON,
+  getUserFromAuth,
+} from "./_supabase.js";
 
-const ADMIN_EMAILS = ["kkk1@gmail.com"];
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "kkk1@gmail.com")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
 function buildSnapshots(rawRows) {
   const groups = {};
   for (const row of rawRows) {
     const emailKey =
       (row.email && row.email.toLowerCase()) ||
-      (`guest-${row.id}`);
+      `guest-${row.id}`;
 
     if (!groups[emailKey]) {
       groups[emailKey] = {
-        all: [],
         latest: row,
         hasSignedUp: !row.is_guest,
       };
-    }
-    const g = groups[emailKey];
-    g.all.push(row);
-    if (!row.is_guest) {
-      g.hasSignedUp = true;
+    } else {
+      // if any record for this email is not guest => whole thing is "User"
+      if (!row.is_guest) {
+        groups[emailKey].hasSignedUp = true;
+      }
     }
   }
 
-  const snapshots = [];
+  const out = [];
   for (const key in groups) {
     const g = groups[key];
     const r = g.latest;
     const top3 = Array.isArray(r.top3) ? r.top3 : [];
+
     const firstPickObj = top3[0] || {};
-    const firstPick =
+    const firstPickText =
       (firstPickObj.brand || firstPickObj.model)
         ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
-        : (r.first_pick || "—");
+        : r.first_pick || "—";
 
-    const topSummary =
+    const topSummaryText =
       top3
         .slice(0, 3)
-        .map(p => `${p.brand || ""} ${p.model || ""}`.trim())
+        .map(
+          (p) =>
+            `${p.brand || ""} ${p.model || ""}`.trim()
+        )
         .filter(Boolean)
-        .join(" • ")
-      || r.top_summary
-      || "—";
+        .join(" • ") ||
+      r.top_summary ||
+      "—";
 
-    snapshots.push({
+    out.push({
       email: r.email || "—",
       name:
         r.name ||
@@ -56,31 +65,35 @@ function buildSnapshots(rawRows) {
         r.email ||
         "—",
       created_at: r.created_at,
-      first_pick: firstPick || "—",
-      top_summary: topSummary,
+      first_pick: firstPickText || "—",
+      top_summary: topSummaryText,
       type: g.hasSignedUp ? "User" : "Guest",
     });
   }
-  return snapshots;
+  return out;
 }
 
 function filterSnapshots(snapshots, { search, type }) {
   let out = snapshots.slice();
 
   if (type === "user") {
-    out = out.filter(x => x.type === "User");
+    out = out.filter((x) => x.type === "User");
   } else if (type === "guest") {
-    out = out.filter(x => x.type === "Guest");
+    out = out.filter((x) => x.type === "Guest");
   }
 
   if (search && search.trim().length >= 2) {
     const needle = search.trim().toLowerCase();
-    out = out.filter(x => {
+    out = out.filter((x) => {
       return (
         (x.email || "").toLowerCase().includes(needle) ||
         (x.name || "").toLowerCase().includes(needle) ||
-        (x.first_pick || "").toLowerCase().includes(needle) ||
-        (x.top_summary || "").toLowerCase().includes(needle)
+        (x.first_pick || "")
+          .toLowerCase()
+          .includes(needle) ||
+        (x.top_summary || "")
+          .toLowerCase()
+          .includes(needle)
       );
     });
   }
@@ -89,14 +102,13 @@ function filterSnapshots(snapshots, { search, type }) {
 }
 
 function toCSV(rows) {
-  // basic CSV generator
   const header = [
     "Email",
     "Name",
     "Created At",
     "#1 Pick",
     "Top-3 Summary",
-    "Type"
+    "Type",
   ];
   const lines = [header.join(",")];
 
@@ -107,10 +119,11 @@ function toCSV(rows) {
       r.created_at || "",
       r.first_pick || "",
       r.top_summary || "",
-      r.type || ""
-    ].map(val => {
-      // escape quotes
-      const v = (val || "").toString().replace(/"/g, '""');
+      r.type || "",
+    ].map((val) => {
+      const v = (val || "")
+        .toString()
+        .replace(/"/g, '""');
       return `"${v}"`;
     });
     lines.push(cells.join(","));
@@ -122,24 +135,25 @@ function toCSV(rows) {
 export default cors(async function handler(event) {
   // 1. auth
   const { user } = await getUserFromAuth(event);
-  if (!user || !ADMIN_EMAILS.includes(user.email)) {
+  const emailLower = user?.email?.toLowerCase() || "";
+  if (!user || !ADMIN_EMAILS.includes(emailLower)) {
     return {
       statusCode: 401,
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ error: "unauthorized" })
+      body: JSON.stringify({ error: "unauthorized" }),
     };
   }
 
-  // 2. body
+  // 2. read body
   const body = parseJSON(event.body);
   const search = body.search || "";
-  const type = body.type || null;
+  const type = body.type || null; // "user"|"guest"|null
 
   const supa = getAdminClient();
 
-  // 3. fetch data
+  // 3. fetch quiz data
   const { data, error } = await supa
     .from("quiz_results")
     .select(`
@@ -159,30 +173,36 @@ export default cors(async function handler(event) {
     .limit(1000);
 
   if (error) {
-    console.error("adminExportCORS select error:", error);
+    console.error(
+      "adminExportCORS select error:",
+      error
+    );
     return {
       statusCode: 500,
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ error: "db_error", detail: String(error.message || error) })
+      body: JSON.stringify({
+        error: "db_error",
+        detail: String(error.message || error),
+      }),
     };
   }
 
-  // 4. group + filter
+  // 4. collapse + filter
   const snaps = buildSnapshots(data || []);
   const filtered = filterSnapshots(snaps, { search, type });
 
-  // 5. build CSV
+  // 5. CSV
   const csv = toCSV(filtered);
 
   return {
     statusCode: 200,
     headers: {
-      // important: CSV download headers
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="users.csv"'
+      "Content-Disposition":
+        'attachment; filename="users.csv"',
     },
-    body: csv
+    body: csv,
   };
 });
