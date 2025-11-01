@@ -17,34 +17,59 @@ export const handler = cors(async (event) => {
     return json(403, { error: "forbidden" });
   }
 
-  const { email, type = "user" } = parseJSON(event.body) || {};
-  if (!email) {
-    return json(400, { error: "missing_email" });
+  const { id, type = "user" } = parseJSON(event.body) || {};
+  if (!id) {
+    return json(400, { error: "missing_id" });
   }
 
   const supa = getAdminClient();
 
-  // USER FLOW
-  if (type === "user") {
-    // 1. find the profile by email
+  // get that specific quiz_results row
+  const { data: baseRows, error: baseErr } = await supa
+    .from("quiz_results")
+    .select("id,created_at,user_id,top3,answers")
+    .eq("id", id)
+    .limit(1);
+
+  if (baseErr) {
+    console.error("[adminDetailsCORS] baseErr:", baseErr);
+    return json(500, {
+      error: "db_failed",
+      detail: baseErr.message
+    });
+  }
+
+  const main = baseRows?.[0];
+  if (!main) {
+    return json(404, { error: "not_found", detail: "row not found" });
+  }
+
+  // if this row belongs to a signed user (has user_id)
+  if (main.user_id) {
+    // fetch profile
     const { data: profRows, error: profErr } = await supa
       .from("profiles")
       .select(
         "id,email,name,nickname,gender,dob,country,state,created_at,updated_at"
       )
-      .eq("email", email)
+      .eq("id", main.user_id)
       .limit(1);
 
     if (profErr) {
       console.error("[adminDetailsCORS] profErr:", profErr);
-      return json(500, { error: "db_profile_failed", detail: profErr.message });
+      return json(500, {
+        error: "db_profile_failed",
+        detail: profErr.message
+      });
     }
-    const profile = profRows?.[0];
+
+    const profile = profRows?.[0] || null;
     if (!profile) {
+      // weird edge case but ok
       return json(404, { error: "not_found", detail: "profile not found" });
     }
 
-    // 2. get ALL quiz_results rows for that user_id
+    // get ALL quiz_results rows for that user_id to build history
     const { data: resRows, error: resErr } = await supa
       .from("quiz_results")
       .select("id,created_at,top3,answers,user_id")
@@ -53,11 +78,14 @@ export const handler = cors(async (event) => {
 
     if (resErr) {
       console.error("[adminDetailsCORS] resErr:", resErr);
-      return json(500, { error: "db_results_failed", detail: resErr.message });
+      return json(500, {
+        error: "db_results_failed",
+        detail: resErr.message
+      });
     }
 
     const latest = resRows?.[0] || null;
-    const picks = Array.isArray(latest?.top3) ? latest.top3.slice(0,3) : [];
+    const picks   = Array.isArray(latest?.top3) ? latest.top3.slice(0,3) : [];
     const answers = latest?.answers || {};
 
     const meta = {
@@ -75,45 +103,29 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // GUEST FLOW
-  // Guest = quiz_results where user_id IS NULL but they still left an email
-  const { data: guestRows, error: guestErr } = await supa
-    .from("quiz_results")
-    .select("id,created_at,top3,answers,user_id,email,name")
-    .is("user_id", null)
-    .eq("email", email)
-    .order("created_at", { ascending: false });
-
-  if (guestErr) {
-    console.error("[adminDetailsCORS] guestErr:", guestErr);
-    return json(500, { error: "db_guest_failed", detail: guestErr.message });
-  }
-  const latest = guestRows?.[0] || null;
-  if (!latest) {
-    return json(404, { error: "not_found", detail: "guest result not found" });
-  }
+  // otherwise: guest (user_id is null)
+  // we only have this single quiz row basically
+  const picks   = Array.isArray(main.top3) ? main.top3.slice(0,3) : [];
+  const answers = main.answers || {};
 
   const profile = {
-    email: latest.email || "—",
-    name: latest.name || "—",
+    email: "—",
+    name: "—",
     nickname: null,
     gender: null,
     dob: null,
     country: null,
     state: null,
-    created_at: latest.created_at,
-    updated_at: latest.created_at,
+    created_at: main.created_at,
+    updated_at: main.created_at,
     user_id: null
   };
 
-  const picks = Array.isArray(latest.top3) ? latest.top3.slice(0,3) : [];
-  const answers = latest.answers || {};
-
   const meta = {
     type: "Guest",
-    top3_count: guestRows?.length ?? 0,
+    top3_count: 1,
     user_id: null,
-    created_at: latest.created_at
+    created_at: main.created_at
   };
 
   return json(200, {
