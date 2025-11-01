@@ -1,4 +1,11 @@
+
+
 // netlify/functions/cors.js
+//
+// Lightweight CORS + response helpers for all Netlify functions.
+// Also normalizes JSON responses so the browser (Webflow, localhost, etc.)
+// can actually call these endpoints with Authorization headers.
+
 const ALLOWED_ORIGINS = [
   "https://scopeonride.webflow.io",
   "https://carbackendd.netlify.app",
@@ -6,60 +13,68 @@ const ALLOWED_ORIGINS = [
   "http://localhost:3000"
 ];
 
-// tiny helper to build Netlify-style responses with headers
-function response(statusCode, bodyObj) {
+// tiny helper for JSON responses
+export function json(statusCode, obj, extraHeaders = {}) {
   return {
     statusCode,
     headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*", // we will also handle stricter allow below
-      "Access-Control-Allow-Headers": "Authorization, Content-Type, X-User-Id, X-User-Email",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+      "Content-Type": extraHeaders["Content-Type"] || "application/json",
+      ...extraHeaders
     },
-    body: JSON.stringify(bodyObj ?? {})
+    body: JSON.stringify(obj ?? {})
   };
 }
 
-// MAIN WRAPPER
+// CORS wrapper
 export default function cors(handler) {
-  return async function(event, context) {
+  return async function (event, context) {
     const origin = event.headers?.origin || "";
-    const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : "*";
+    // if origin is known, reflect it back. otherwise just fall back to first allowed
+    const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+      ? origin
+      : ALLOWED_ORIGINS[0];
 
-    // Handle OPTIONS preflight right here
+    // Handle OPTIONS (preflight) without touching handler
     if (event.httpMethod === "OPTIONS") {
       return {
         statusCode: 200,
         headers: {
-          "Access-Control-Allow-Origin": allowed,
-          "Access-Control-Allow-Headers": "Authorization, Content-Type, X-User-Id, X-User-Email",
+          "Access-Control-Allow-Origin": allowedOrigin,
+          "Access-Control-Allow-Headers":
+            "Authorization, Content-Type, X-User-Id, X-User-Email",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Max-Age": "86400"
+          "Access-Control-Max-Age": "86400",
+          "Vary": "Origin"
         },
         body: ""
       };
     }
 
-    // Run actual handler
+    // Run the real handler
     let result;
     try {
       result = await handler(event, context);
     } catch (err) {
-      console.error("Function exploded:", err);
-      return {
+      console.error("Function crashed:", err);
+      result = {
         statusCode: 500,
-        headers: {
-          "Access-Control-Allow-Origin": allowed,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ error: "internal_error", detail: "" + err })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: "internal_error",
+          detail: String(err)
+        })
       };
     }
 
-    // normalize handler return
+    // normalize handler result if they just returned plain data
     if (!result || typeof result !== "object") {
-      result = { statusCode: 200, body: result ?? "" };
+      result = {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(result ?? {})
+      };
     }
+
     const {
       statusCode = 200,
       headers = {},
@@ -69,9 +84,11 @@ export default function cors(handler) {
     return {
       statusCode,
       headers: {
-        "Access-Control-Allow-Origin": allowed,
-        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-User-Id, X-User-Email",
+        "Access-Control-Allow-Origin": allowedOrigin,
+        "Access-Control-Allow-Headers":
+          "Authorization, Content-Type, X-User-Id, X-User-Email",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Vary": "Origin",
         "Content-Type": headers["Content-Type"] || "application/json",
         ...headers
       },
@@ -80,15 +97,3 @@ export default function cors(handler) {
   };
 }
 
-// also export a helper so you can early-return with JSON easily
-export function json(statusCode, obj) {
-  return {
-    statusCode,
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(obj ?? {})
-  };
-}
-
-export { response };
