@@ -10,7 +10,7 @@ const SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE;
 
-// <- put the emails that are allowed to view the admin dashboard
+// emails allowed to access admin
 export const ADMIN_EMAILS = [
   "kkk1@gmail.com"
 ];
@@ -21,14 +21,14 @@ if (!SUPABASE_URL || !SERVICE_ROLE) {
   );
 }
 
-// full-access server client (service_role key)
+// full-access server client
 export function getAdminClient() {
   return createClient(SUPABASE_URL, SERVICE_ROLE, {
     auth: { persistSession: false }
   });
 }
 
-// safe body parse
+// safe parse body
 export function parseJSON(body) {
   try {
     return body ? JSON.parse(body) : {};
@@ -37,7 +37,7 @@ export function parseJSON(body) {
   }
 }
 
-// pull the supabase user from Authorization: Bearer <jwt>
+// extract Supabase user from Authorization: Bearer <jwt>
 export async function getUserFromAuth(event) {
   const authHeader =
     event.headers?.authorization ||
@@ -62,7 +62,7 @@ export async function getUserFromAuth(event) {
   return { token, user: data?.user || null };
 }
 
-// check if this supabase user is allowed in admin
+// check if this user is an allowed admin
 export function isAllowedAdmin(user) {
   if (!user) return false;
   const email = (user.email || "").toLowerCase();
