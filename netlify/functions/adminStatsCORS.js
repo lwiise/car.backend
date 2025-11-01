@@ -2,63 +2,83 @@
 import cors, { json } from "./cors.js";
 import {
   getAdminClient,
-  getUserFromAuth,
   parseJSON,
-  isAllowedAdmin,
+  getUserFromAuth,
+  isAllowedAdmin
 } from "./_supabase.js";
 
-async function handler(event) {
+export const handler = cors(async (event) => {
   if (event.httpMethod !== "POST") {
-    return json(405, { error: "Method not allowed" });
+    return json(405, { error: "method_not_allowed" });
   }
 
-  // 1. auth
   const { user } = await getUserFromAuth(event);
-  if (!user || !isAllowedAdmin(user.email)) {
-    return json(401, { error: "unauthorized" });
+  if (!isAllowedAdmin(user)) {
+    return json(403, { error: "forbidden" });
   }
 
-  // 2. parse input
-  const body = parseJSON(event.body);
-  const lastDays = Number(body.lastDays ?? 7);
-  const type     = body.type || null; // "user" | "guest" | null
+  const {
+    lastDays = 7,
+    type = "user" // "user" | "guest" | "all"
+  } = parseJSON(event.body);
 
   const supa = getAdminClient();
 
-  // 3. YOUR REAL QUERY GOES HERE
-  //
-  // You probably already had logic like:
-  //  - count total distinct users/guests
-  //  - count how many were created in the last X days
-  //    (NOW() - lastDays)
-  //  - optionally filter by `type`
-  //
-  // Example pseudo:
-  //
-  // const sinceIso = new Date(Date.now() - lastDays*24*60*60*1000).toISOString();
-  //
-  // const { data: totalRows, error: errTotal } = await supa
-  //   .from("YOUR_USER_INDEX")
-  //   .select("id", { count: "exact", head: true })
-  //   .eq("user_type_col", type); // only if type != null
-  //
-  // const { data: newRows, error: errNew } = await supa
-  //   .from("YOUR_USER_INDEX")
-  //   .select("id", { count: "exact", head: true })
-  //   .gte("created_at", sinceIso)
-  //   .eq("user_type_col", type); // only if type != null
-  //
-  // const total = totalRows?.length or errTotal?.count etc (depending how you wrote it)
-  // const fresh = newRows?.length  or errNew?.count
-  //
-  // return json(200, { total, new: fresh });
+  // We'll fetch quiz_results rows, then compute stats in JS.
+  // Why JS? Because we need distinct user_id counts for "users".
 
-  // ---------- PLACEHOLDER ----------
-  // remove this once you paste your working supabase counting code
+  // date cutoff
+  const cutoff = new Date(Date.now() - lastDays * 24*60*60*1000).toISOString();
+
+  // base query
+  let baseReq = supa
+    .from("quiz_results")
+    .select("id,created_at,user_id");
+
+  // filter by type
+  if (type === "guest") {
+    baseReq = baseReq.is("user_id", null);
+  } else if (type === "user") {
+    baseReq = baseReq.not("user_id", "is", null);
+  }
+
+  const { data: allRows, error: allErr } = await baseReq;
+  if (allErr) {
+    console.error("[adminStatsCORS] allErr:", allErr);
+    return json(500, { error: "db_failed", detail: allErr.message });
+  }
+
+  // split logic
+  if (type === "guest") {
+    // guests are quiz_results with user_id NULL
+    const totalGuests = allRows.length;
+
+    const newGuests = allRows.filter(r => {
+      return r.created_at && r.created_at >= cutoff;
+    }).length;
+
+    return json(200, {
+      total: totalGuests,
+      new: newGuests
+    });
+  }
+
+  // user or all => consider signed users only (user_id not null)
+  // we don't want to count same user twice
+  const signedRows = allRows.filter(r => !!r.user_id);
+
+  const totalUserIds = new Set(signedRows.map(r => r.user_id));
+  const totalUsersCount = totalUserIds.size;
+
+  const newUserIds = new Set(
+    signedRows
+      .filter(r => r.created_at && r.created_at >= cutoff)
+      .map(r => r.user_id)
+  );
+  const newUsersCount = newUserIds.size;
+
   return json(200, {
-    total: 0,
-    new: 0,
+    total: totalUsersCount,
+    new: newUsersCount
   });
-}
-
-export const handler = cors(handler);
+});
