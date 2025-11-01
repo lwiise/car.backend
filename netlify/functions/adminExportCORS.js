@@ -7,14 +7,13 @@ import {
   isAllowedAdmin
 } from "./_supabase.js";
 
-/**
- * Same shape idea as adminListCORS, but for CSV.
- */
 function shapeRow(resultRow, profileMap) {
   const {
     id,
     created_at,
-    user_id
+    user_id,
+    first_pick,
+    top_summary
   } = resultRow || {};
 
   const prof = user_id ? profileMap[user_id] : null;
@@ -22,20 +21,14 @@ function shapeRow(resultRow, profileMap) {
   const finalEmail = prof?.email || "—";
   const finalName  = prof?.name || prof?.nickname || "—";
 
-  // can't read car picks columns yet
-  const first_pick  = "—";
-  const top_summary = "—";
-
-  const typeLabel   = user_id ? "User" : "Guest";
-
   return {
     id,
     created_at,
     name: finalName,
     email: finalEmail,
-    first_pick,
-    top_summary,
-    type: typeLabel
+    first_pick: first_pick || "—",
+    top_summary: top_summary || "—",
+    type: user_id ? "User" : "Guest"
   };
 }
 
@@ -59,16 +52,16 @@ export const handler = cors(async (event) => {
 
   const {
     search = "",
-    type = "user",
+    type = "all",
     resultsOnly = true
   } = parseJSON(event.body);
 
   const supa = getAdminClient();
 
-  // grab all quiz_results rows (we'll JS-filter for CSV)
+  // grab everything (filtered by type)
   let listReq = supa
     .from("quiz_results")
-    .select("id,created_at,user_id")
+    .select("id,created_at,user_id,first_pick,top_summary")
     .order("created_at", { ascending: false });
 
   if (type === "guest") {
@@ -90,7 +83,7 @@ export const handler = cors(async (event) => {
     };
   }
 
-  // build profile map
+  // map of user_id -> profile
   const userIds = Array.from(
     new Set(
       resultRows
@@ -106,31 +99,30 @@ export const handler = cors(async (event) => {
       .select("id,email,name,nickname")
       .in("id", userIds);
 
-    if (profErr) {
-      console.warn("[adminExportCORS] profErr:", profErr);
-    } else {
+    if (!profErr && Array.isArray(profRows)) {
       profileMap = Object.fromEntries(
         profRows.map(p => [p.id, p])
       );
     }
   }
 
-  // shape rows
+  // shape
   let shaped = resultRows.map(r => shapeRow(r, profileMap));
 
-  // in-memory search
-  const q = (search || "").trim().toLowerCase();
+  // search in memory
+  const q = search.trim().toLowerCase();
   if (q) {
     shaped = shaped.filter(row => {
       const hay =
         (row.name || "") + " " +
         (row.email || "") + " " +
+        (row.first_pick || "") + " " +
         (row.top_summary || "");
       return hay.toLowerCase().includes(q);
     });
   }
 
-  // CSV build
+  // CSV
   const header = [
     "id",
     "created_at",
