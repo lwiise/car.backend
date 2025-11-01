@@ -1,25 +1,31 @@
 // netlify/functions/adminDetailsCORS.js
 import cors, { json } from "./cors.js";
-import supaHelpers from "./_supabase.js";
-const { getAdminClient, parseJSON, getUserFromAuth } = supaHelpers;
+import {
+  getAdminClient,
+  parseJSON,
+  getUserFromAuth,
+} from "./_supabase.js";
 
-const ADMIN_EMAILS = ["kkk1@gmail.com"];
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "kkk1@gmail.com")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
 export default cors(async function handler(event) {
   // 1. auth
   const { user } = await getUserFromAuth(event);
-  if (!user || !ADMIN_EMAILS.includes(user.email)) {
+  const emailLower = user?.email?.toLowerCase() || "";
+  if (!user || !ADMIN_EMAILS.includes(emailLower)) {
     return json(401, { error: "unauthorized" });
   }
 
-  // 2. body
+  // 2. body from frontend
   const body = parseJSON(event.body);
-  // frontend sends { email, type }
   const email = (body.email || "").trim();
-  // const dtype = body.type || "user"; // could be useful if you ever want to branch
 
+  // If it's a pure anonymous guest w/ no stored email,
+  // we can't really load profile details.
   if (!email || email === "—") {
-    // Guest with literally no email saved -> we can't look them up.
     return json(200, {
       profile: {
         email: "—",
@@ -36,7 +42,7 @@ export default cors(async function handler(event) {
 
   const supa = getAdminClient();
 
-  // 3. get the most recent quiz result(s) for this email
+  // 3. the most recent few quiz results for this email
   const { data: resultsData, error: resErr } = await supa
     .from("quiz_results")
     .select(`
@@ -62,28 +68,32 @@ export default cors(async function handler(event) {
     .limit(5);
 
   if (resErr) {
-    console.error("adminDetailsCORS quiz_results error:", resErr);
-    return json(500, { error: "db_error", detail: String(resErr.message || resErr) });
+    console.error(
+      "adminDetailsCORS quiz_results error:",
+      resErr
+    );
+    return json(500, {
+      error: "db_error",
+      detail: String(resErr.message || resErr),
+    });
   }
 
   const mostRecent = resultsData?.[0] || null;
-  const isSignedUp = resultsData?.some(r => !r.is_guest);
+  const isSignedUp = resultsData?.some((r) => !r.is_guest);
 
-  // build picks array for UI (use most recent result's top3)
+  // picks block (top3 of most recent attempt)
   const picks = Array.isArray(mostRecent?.top3)
-    ? mostRecent.top3.slice(0, 3).map(p => ({
+    ? mostRecent.top3.slice(0, 3).map((p) => ({
         brand: p.brand || "",
         model: p.model || "",
         reason: p.reason || "",
       }))
     : [];
 
-  // answers from the most recent quiz attempt
+  // answers from most recent attempt
   const answers = mostRecent?.answers || {};
 
-  // 4. try to load profile row (if you have "profiles" table)
-  //    If you don't have this table, you can delete this whole section and
-  //    just build `profileObj` from mostRecent.
+  // 4. try to load full profile details from `profiles` table (optional)
   let profileRow = null;
   try {
     const { data: profData, error: profErr } = await supa
@@ -104,19 +114,25 @@ export default cors(async function handler(event) {
       `)
       .eq("email", email)
       .limit(1)
-      .maybeSingle(); // Netlify env might not support .single(), so we'll safe-check below
+      .maybeSingle(); // supabase-js v2 supports maybeSingle()
 
     if (!profErr) {
       profileRow = profData || null;
     } else {
-      console.warn("profiles lookup error:", profErr.message || profErr);
+      console.warn(
+        "profiles lookup error:",
+        profErr.message || profErr
+      );
     }
   } catch (err) {
-    // swallow profile lookup issues so Details still works
-    console.warn("profiles table not found / error:", err);
+    // If there's no "profiles" table or the call fails, we just skip it.
+    console.warn(
+      "profiles table not found / cannot fetch:",
+      err
+    );
   }
 
-  // final profile object for frontend
+  // final "profile" object we will send to the frontend
   const profileObj = profileRow || {
     email: mostRecent?.email || email,
     name:
@@ -133,14 +149,21 @@ export default cors(async function handler(event) {
     state: mostRecent?.state || "—",
     created_at: mostRecent?.created_at || null,
     updated_at: mostRecent?.updated_at || null,
-    user_id: mostRecent?.user_id || mostRecent?.id || null,
+    user_id:
+      mostRecent?.user_id ||
+      mostRecent?.id ||
+      null,
   };
 
-  // meta block for the UI "Metadata" card
+  // meta block for the "Metadata" section in modal
   const metaObj = {
     type: isSignedUp ? "User" : "Guest",
     top3_count: picks.length || 0,
-    user_id: profileObj.user_id || profileObj.id || mostRecent?.user_id || "—",
+    user_id:
+      profileObj.user_id ||
+      profileObj.id ||
+      mostRecent?.user_id ||
+      "—",
     created_at: mostRecent?.created_at || null,
   };
 
