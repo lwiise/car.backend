@@ -7,13 +7,22 @@ import {
   isAllowedAdmin
 } from "./_supabase.js";
 
+function grabSummary(row) {
+  return (
+    row.top_summary ??
+    row.top3 ??
+    row.top_3 ??
+    row.summary ??
+    ""
+  );
+}
+
 function shapeRow(resultRow, profileMap) {
   const {
     id,
     created_at,
     user_id,
-    first_pick,
-    top_summary
+    first_pick
   } = resultRow || {};
 
   const prof = user_id ? profileMap[user_id] : null;
@@ -27,7 +36,7 @@ function shapeRow(resultRow, profileMap) {
     name: finalName,
     email: finalEmail,
     first_pick: first_pick || "—",
-    top_summary: top_summary || "—",
+    top_summary: grabSummary(resultRow) || "—",
     type: user_id ? "User" : "Guest"
   };
 }
@@ -52,16 +61,15 @@ export const handler = cors(async (event) => {
 
   const {
     search = "",
-    type = "all",
-    resultsOnly = true
+    type = "all"
   } = parseJSON(event.body);
 
   const supa = getAdminClient();
 
-  // grab everything (filtered by type)
+  // grab all rows (filtered by type)
   let listReq = supa
     .from("quiz_results")
-    .select("id,created_at,user_id,first_pick,top_summary")
+    .select("*")
     .order("created_at", { ascending: false });
 
   if (type === "guest") {
@@ -83,7 +91,7 @@ export const handler = cors(async (event) => {
     };
   }
 
-  // map of user_id -> profile
+  // profile map
   const userIds = Array.from(
     new Set(
       resultRows
@@ -109,7 +117,7 @@ export const handler = cors(async (event) => {
   // shape
   let shaped = resultRows.map(r => shapeRow(r, profileMap));
 
-  // search in memory
+  // in-memory search
   const q = search.trim().toLowerCase();
   if (q) {
     shaped = shaped.filter(row => {
@@ -122,7 +130,7 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // CSV
+  // CSV build
   const header = [
     "id",
     "created_at",
