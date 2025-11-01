@@ -2,74 +2,124 @@
 import cors, { json } from "./cors.js";
 import {
   getAdminClient,
-  getUserFromAuth,
   parseJSON,
-  isAllowedAdmin,
+  getUserFromAuth,
+  isAllowedAdmin
 } from "./_supabase.js";
 
-async function handler(event) {
+export const handler = cors(async (event) => {
   if (event.httpMethod !== "POST") {
-    return json(405, { error: "Method not allowed" });
+    return json(405, { error: "method_not_allowed" });
   }
 
-  // 1. auth
   const { user } = await getUserFromAuth(event);
-  if (!user || !isAllowedAdmin(user.email)) {
-    return json(401, { error: "unauthorized" });
+  if (!isAllowedAdmin(user)) {
+    return json(403, { error: "forbidden" });
   }
 
-  // 2. body
-  const body  = parseJSON(event.body);
-  const email = (body.email || "").trim();
-  const type  = (body.type  || "user").toLowerCase(); // "user" | "guest"
+  const { email, type = "user" } = parseJSON(event.body) || {};
   if (!email) {
-    return json(400, { error: "missing email" });
+    return json(400, { error: "missing_email" });
   }
 
   const supa = getAdminClient();
 
-  // 3. YOUR REAL LOGIC HERE
-  //
-  // You already had code that:
-  //  - looks up the profile row (name, nickname, gender, dob, country, state, created_at, updated_at, etc.)
-  //  - gathers quiz metadata (type, top3_count, user_id, created_at)
-  //  - grabs the top-3 picks for that user/guest
-  //  - grabs the full questionnaire answers
-  //
-  // do that same logic here and shape the final object exactly like below.
+  // USER FLOW
+  if (type === "user") {
+    // 1. find the profile by email
+    const { data: profRows, error: profErr } = await supa
+      .from("profiles")
+      .select(
+        "id,email,name,nickname,gender,dob,country,state,created_at,updated_at"
+      )
+      .eq("email", email)
+      .limit(1);
 
-  // Example shape you must return:
+    if (profErr) {
+      console.error("[adminDetailsCORS] profErr:", profErr);
+      return json(500, { error: "db_profile_failed", detail: profErr.message });
+    }
+    const profile = profRows?.[0];
+    if (!profile) {
+      return json(404, { error: "not_found", detail: "profile not found" });
+    }
+
+    // 2. get ALL quiz_results rows for that user_id
+    const { data: resRows, error: resErr } = await supa
+      .from("quiz_results")
+      .select("id,created_at,top3,answers,user_id")
+      .eq("user_id", profile.id)
+      .order("created_at", { ascending: false });
+
+    if (resErr) {
+      console.error("[adminDetailsCORS] resErr:", resErr);
+      return json(500, { error: "db_results_failed", detail: resErr.message });
+    }
+
+    const latest = resRows?.[0] || null;
+    const picks = Array.isArray(latest?.top3) ? latest.top3.slice(0,3) : [];
+    const answers = latest?.answers || {};
+
+    const meta = {
+      type: "User",
+      top3_count: resRows?.length ?? 0,
+      user_id: profile.id,
+      created_at: latest?.created_at || profile.created_at
+    };
+
+    return json(200, {
+      profile,
+      meta,
+      picks,
+      answers
+    });
+  }
+
+  // GUEST FLOW
+  // Guest = quiz_results where user_id IS NULL but they still left an email
+  const { data: guestRows, error: guestErr } = await supa
+    .from("quiz_results")
+    .select("id,created_at,top3,answers,user_id,email,name")
+    .is("user_id", null)
+    .eq("email", email)
+    .order("created_at", { ascending: false });
+
+  if (guestErr) {
+    console.error("[adminDetailsCORS] guestErr:", guestErr);
+    return json(500, { error: "db_guest_failed", detail: guestErr.message });
+  }
+  const latest = guestRows?.[0] || null;
+  if (!latest) {
+    return json(404, { error: "not_found", detail: "guest result not found" });
+  }
+
   const profile = {
-    // name, email, nickname, gender, dob, country, state,
-    // created_at, updated_at, user_id...
+    email: latest.email || "—",
+    name: latest.name || "—",
+    nickname: null,
+    gender: null,
+    dob: null,
+    country: null,
+    state: null,
+    created_at: latest.created_at,
+    updated_at: latest.created_at,
+    user_id: null
   };
+
+  const picks = Array.isArray(latest.top3) ? latest.top3.slice(0,3) : [];
+  const answers = latest.answers || {};
 
   const meta = {
-    // type: "User" | "Guest",
-    // top3_count,
-    // user_id,
-    // created_at,
+    type: "Guest",
+    top3_count: guestRows?.length ?? 0,
+    user_id: null,
+    created_at: latest.created_at
   };
 
-  const picks = [
-    // { brand: "Tesla", model: "Model 3", reason: "great range" },
-    // ...
-  ];
-
-  const answers = {
-    // q1_bodyType: "...",
-    // q2_budget: "...",
-    // ...
-  };
-
-  // ---------- PLACEHOLDER RETURN ----------
-  // replace these empty defaults with real data you build above
   return json(200, {
-    profile: profile,
-    meta: meta,
-    picks: picks,
-    answers: answers,
+    profile,
+    meta,
+    picks,
+    answers
   });
-}
-
-export const handler = cors(handler);
+});
