@@ -1,98 +1,92 @@
 // netlify/functions/adminDetailsCORS.js
-const { cors } = require("./cors");
-const {
+import cors, { json } from "./cors.js";
+import {
   getAdminClient,
-  parseJSON,
   getUserFromAuth,
-} = require("./_supabase");
+  parseJSON,
+  ADMIN_EMAILS
+} from "./_supabaseAdmin.js";
 
-const ADMIN_EMAILS = []; // lock down later if you want
-
-module.exports = cors(async (event) => {
-  // auth
+export const handler = cors(async function (event, context) {
   const { user } = await getUserFromAuth(event);
-  if (!user) {
-    return {
-      statusCode: 401,
-      body: { error: "Unauthorized (no token)" },
-    };
+  if (!user) return json(401, { error: "unauthorized" });
+  if (!ADMIN_EMAILS.includes(user.email)) {
+    return json(403, { error: "forbidden" });
   }
-  if (ADMIN_EMAILS.length && !ADMIN_EMAILS.includes(user.email)) {
-    return {
-      statusCode: 403,
-      body: { error: "Forbidden (not admin)" },
-    };
-  }
+
+  const body = parseJSON(event.body);
+  const email = body.email || "";
+  // body.type can be "user"/"guest", but we'll infer from data anyway
 
   const supa = getAdminClient();
-  const body = parseJSON(event.body || "{}");
-  const email = (body.email || "").trim().toLowerCase();
 
-  if (!email) {
-    return {
-      statusCode: 400,
-      body: { error: "email required" },
-    };
+  // 1. find profile by email
+  let profile = null;
+  if (email) {
+    const { data: profRow, error: profErr } = await supa
+      .from("profiles")
+      .select(
+        "user_id, full_name, first_name, nickname, name, email, gender, dob, country, state, created_at, updated_at"
+      )
+      .eq("email", email)
+      .maybeSingle();
+
+    if (profErr) {
+      console.warn("adminDetailsCORS profile err:", profErr);
+    }
+    profile = profRow || null;
   }
 
-  // 1) Find profile by email
-  const { data: profRows, error: profErr } = await supa
-    .from("profiles")
-    .select(
-      "user_id, email, name, nickname, full_name, gender, dob, country, state, created_at, updated_at, is_guest"
-    )
-    .eq("email", email)
-    .limit(1);
+  let userIdForResults = profile?.user_id || null;
 
-  if (profErr) {
-    console.error("adminDetailsCORS profile error:", profErr);
-    return {
-      statusCode: 500,
-      body: { error: "DB error loading profile" },
-    };
-  }
-  const profile = profRows && profRows[0];
-  if (!profile) {
-    return {
-      statusCode: 404,
-      body: { error: "Profile not found" },
-    };
-  }
+  // 2. find latest result row for that user (or fallback to any latest result)
+  let resultRow = null;
 
-  // 2) Grab user's most recent result
-  const { data: resRows, error: resErr } = await supa
-    .from("results")
-    .select("id, created_at, top3, answers")
-    .eq("user_id", profile.user_id)
-    .order("created_at", { ascending: false })
-    .limit(1);
+  if (userIdForResults) {
+    const { data: resRows, error: resErr } = await supa
+      .from("results")
+      .select("id, created_at, top3, answers, user_id")
+      .eq("user_id", userIdForResults)
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-  if (resErr) {
-    console.error("adminDetailsCORS results error:", resErr);
-    return {
-      statusCode: 500,
-      body: { error: "DB error loading results" },
-    };
+    if (resErr) console.warn("adminDetailsCORS result err:", resErr);
+    resultRow = Array.isArray(resRows) && resRows[0] ? resRows[0] : null;
+  } else {
+    const { data: resRowsGuest, error: resErr2 } = await supa
+      .from("results")
+      .select("id, created_at, top3, answers, user_id")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (resErr2) console.warn("adminDetailsCORS guest result err:", resErr2);
+    resultRow =
+      Array.isArray(resRowsGuest) && resRowsGuest[0]
+        ? resRowsGuest[0]
+        : null;
+
+    if (!userIdForResults) {
+      userIdForResults = resultRow?.user_id || null;
+    }
   }
 
-  const latestResult = resRows && resRows[0];
-  const picks = latestResult?.top3 || [];
-  const answers = latestResult?.answers || {};
+  const picks = Array.isArray(resultRow?.top3) ? resultRow.top3 : [];
+  const answers = resultRow?.answers || {};
 
   const meta = {
-    type: profile.is_guest ? "Guest" : "User",
-    user_id: profile.user_id || null,
-    created_at: latestResult?.created_at || profile.created_at || null,
-    top3_count: Array.isArray(picks) ? picks.length : 0,
+    user_id: userIdForResults || null,
+    type: resultRow?.user_id ? "User" : "Guest",
+    top3_count: picks.length,
+    created_at:
+      resultRow?.created_at ||
+      profile?.created_at ||
+      null
   };
 
-  return {
-    statusCode: 200,
-    body: {
-      profile,
-      meta,
-      picks,
-      answers,
-    },
-  };
+  return json(200, {
+    profile: profile || {},
+    meta,
+    picks,
+    answers
+  });
 });
