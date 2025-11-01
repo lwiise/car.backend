@@ -8,15 +8,19 @@ import {
 } from "./_supabase.js";
 
 /**
- * Build the final row object sent to frontend.
- * We merge quiz_results row + profiles row (if user_id exists).
+ * Turn one quiz_results row + optional profile info
+ * into what the frontend table expects.
+ *
+ * NOTE:
+ * We are NOT using quiz_results.top3 or answers anymore,
+ * because those columns don't exist in your DB (confirmed by 500).
+ * We'll just send placeholders for first_pick and top_summary for now.
  */
 function shapeRow(resultRow, profileMap) {
   const {
     id,
     created_at,
-    user_id,
-    top3
+    user_id
   } = resultRow || {};
 
   const prof = user_id ? profileMap[user_id] : null;
@@ -24,24 +28,12 @@ function shapeRow(resultRow, profileMap) {
   const finalEmail = prof?.email || "—";
   const finalName  = prof?.name || prof?.nickname || "—";
 
-  // first pick
-  let first_pick = "—";
-  if (Array.isArray(top3) && top3.length > 0) {
-    const p = top3[0];
-    first_pick = `${p.brand || ""} ${p.model || ""}`.trim() || "—";
-  }
+  // we can't read car picks yet (column doesn't exist),
+  // so just placeholders for now:
+  const first_pick  = "—";
+  const top_summary = "—";
 
-  // summary of top3
-  let top_summary = "—";
-  if (Array.isArray(top3) && top3.length > 0) {
-    top_summary = top3
-      .slice(0, 3)
-      .map(p => `${p.brand || ""} ${p.model || ""}`.trim())
-      .filter(Boolean)
-      .join(" • ") || "—";
-  }
-
-  const typeLabel = user_id ? "User" : "Guest";
+  const typeLabel   = user_id ? "User" : "Guest";
 
   return {
     id,
@@ -50,7 +42,7 @@ function shapeRow(resultRow, profileMap) {
     name: finalName,
     first_pick,
     top_summary,
-    top3,
+    top3: [],         // placeholder, keeps frontend happy
     type: typeLabel
   };
 }
@@ -60,53 +52,51 @@ export const handler = cors(async (event) => {
     return json(405, { error: "method_not_allowed" });
   }
 
-  // 1. Auth check
+  // 1. auth check
   const { user } = await getUserFromAuth(event);
   if (!isAllowedAdmin(user)) {
     return json(403, { error: "forbidden" });
   }
 
-  // 2. Read body from frontend
+  // 2. read request body
   const {
     page = 1,
     pageSize = 20,
     search = "",
-    type = "user",           // "user", "guest", or "all"
-    resultsOnly = true       // kept for compatibility with frontend
+    type = "user",           // "user" | "guest" | "all"
+    resultsOnly = true       // kept for compatibility
   } = parseJSON(event.body);
 
   const supa = getAdminClient();
 
-  // We’ll support search in JS after we fetch,
-  // so we don't rely on missing DB columns.
   const querySearch = (search || "").trim().toLowerCase();
   const wantsSearch = querySearch.length > 0;
 
-  // pagination range
+  // pagination math
   const from = (page - 1) * pageSize;
   const to   = from + pageSize - 1;
 
-  // if we are searching, grab a bigger window so we can filter in JS
-  // (to avoid hitting columns that don't exist in SQL)
+  // if searching, grab up to 1000 rows and filter in JS
   const MAX_FETCH = 1000;
   const rangeFrom = wantsSearch ? 0 : from;
   const rangeTo   = wantsSearch ? (MAX_FETCH - 1) : to;
 
-  // base query to quiz_results
+  // build base query ONLY with columns we know exist
   let listReq = supa
     .from("quiz_results")
-    .select("id,created_at,user_id,top3")
+    .select("id,created_at,user_id")
     .order("created_at", { ascending: false })
     .range(rangeFrom, rangeTo);
 
-  // filter type
+  // filter "Users" vs "Guests"
   if (type === "guest") {
-    // only guests: user_id IS NULL
+    // guests: user_id IS NULL
     listReq = listReq.is("user_id", null);
   } else if (type === "user") {
-    // only users: user_id NOT NULL
+    // signed users: user_id NOT NULL
     listReq = listReq.not("user_id", "is", null);
-  } // "all" = no extra filter
+  }
+  // "all" -> no extra filter
 
   const { data: resultRows, error: listErr } = await listReq;
   if (listErr) {
@@ -117,7 +107,7 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // build map of profile data so we can attach email/name to the rows
+  // pull all distinct user_ids we saw (signed users only)
   const userIds = Array.from(
     new Set(
       resultRows
@@ -126,6 +116,7 @@ export const handler = cors(async (event) => {
     )
   );
 
+  // build profile map for email/name
   let profileMap = {};
   if (userIds.length > 0) {
     const { data: profRows, error: profErr } = await supa
@@ -142,10 +133,11 @@ export const handler = cors(async (event) => {
     }
   }
 
-  // shape rows
+  // shape rows for frontend
   let shaped = resultRows.map(r => shapeRow(r, profileMap));
 
-  // apply search in JS (search by name/email/top_summary)
+  // in-memory search: name/email/top_summary
+  // (top_summary is "—" for now but we keep it for future)
   if (wantsSearch) {
     shaped = shaped.filter(row => {
       const hay =
@@ -156,7 +148,7 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // after filtering, slice to requested page
+  // final page cut
   const paged = wantsSearch
     ? shaped.slice(from, from + pageSize)
     : shaped;
