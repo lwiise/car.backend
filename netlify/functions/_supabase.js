@@ -1,7 +1,6 @@
 // netlify/functions/_supabase.js
 import { createClient } from "@supabase/supabase-js";
 
-// --- read secrets from Netlify env ---
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -10,11 +9,9 @@ const SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE;
 
-// ❗ put YOUR real admin emails here
-// Only these people can open /admin dashboard
+// set who is allowed in the admin dashboard
 export const ADMIN_EMAILS = [
-  "kkk1@gmail.com",
-  // add more if needed
+  "kkk1@gmail.com", // you
 ];
 
 if (!SUPABASE_URL || !SERVICE_ROLE) {
@@ -25,7 +22,6 @@ if (!SUPABASE_URL || !SERVICE_ROLE) {
   );
 }
 
-// service-role client = full DB access (server only)
 export function getAdminClient() {
   if (!SUPABASE_URL || !SERVICE_ROLE) {
     throw new Error("SUPABASE_URL or SERVICE_ROLE missing");
@@ -35,7 +31,7 @@ export function getAdminClient() {
   });
 }
 
-// safe JSON parse
+// safely parse the body
 export function parseJSON(body) {
   try {
     return body ? JSON.parse(body) : {};
@@ -44,7 +40,7 @@ export function parseJSON(body) {
   }
 }
 
-// pull current supabase user by Bearer token
+// read Authorization: Bearer <jwt> and resolve Supabase user
 export async function getUserFromAuth(event) {
   const authHeader =
     event.headers?.authorization ||
@@ -70,7 +66,6 @@ export async function getUserFromAuth(event) {
   return { token, user: data?.user || null };
 }
 
-// tiny helper
 export function isAllowedAdmin(user) {
   if (!user || !user.email) return false;
   return ADMIN_EMAILS.includes(user.email.toLowerCase());
