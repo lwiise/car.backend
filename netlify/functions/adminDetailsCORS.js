@@ -12,11 +12,13 @@ export const handler = cors(async (event) => {
     return json(405, { error: "method_not_allowed" });
   }
 
+  // auth
   const { user } = await getUserFromAuth(event);
   if (!isAllowedAdmin(user)) {
     return json(403, { error: "forbidden" });
   }
 
+  // body
   const { id, type = "user" } = parseJSON(event.body) || {};
   if (!id) {
     return json(400, { error: "missing_id" });
@@ -24,10 +26,10 @@ export const handler = cors(async (event) => {
 
   const supa = getAdminClient();
 
-  // get that specific quiz_results row
+  // get that quiz_results row (only columns we know exist)
   const { data: baseRows, error: baseErr } = await supa
     .from("quiz_results")
-    .select("id,created_at,user_id,top3,answers")
+    .select("id,created_at,user_id")
     .eq("id", id)
     .limit(1);
 
@@ -44,9 +46,9 @@ export const handler = cors(async (event) => {
     return json(404, { error: "not_found", detail: "row not found" });
   }
 
-  // if this row belongs to a signed user (has user_id)
+  // If it's a signed user (has user_id)
   if (main.user_id) {
-    // fetch profile
+    // get profile
     const { data: profRows, error: profErr } = await supa
       .from("profiles")
       .select(
@@ -65,14 +67,13 @@ export const handler = cors(async (event) => {
 
     const profile = profRows?.[0] || null;
     if (!profile) {
-      // weird edge case but ok
       return json(404, { error: "not_found", detail: "profile not found" });
     }
 
-    // get ALL quiz_results rows for that user_id to build history
+    // get ALL quiz_results rows for that user
     const { data: resRows, error: resErr } = await supa
       .from("quiz_results")
-      .select("id,created_at,top3,answers,user_id")
+      .select("id,created_at,user_id")
       .eq("user_id", profile.id)
       .order("created_at", { ascending: false });
 
@@ -84,13 +85,16 @@ export const handler = cors(async (event) => {
       });
     }
 
+    // we don't have top3 / answers anymore;
+    // we'll send empty picks / answers to avoid crashing UI
+    const picks   = [];        // placeholder until we know column names
+    const answers = {};        // same
+
     const latest = resRows?.[0] || null;
-    const picks   = Array.isArray(latest?.top3) ? latest.top3.slice(0,3) : [];
-    const answers = latest?.answers || {};
 
     const meta = {
       type: "User",
-      top3_count: resRows?.length ?? 0,
+      top3_count: resRows?.length ?? 0, // keep same field name for UI
       user_id: profile.id,
       created_at: latest?.created_at || profile.created_at
     };
@@ -103,10 +107,10 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // otherwise: guest (user_id is null)
-  // we only have this single quiz row basically
-  const picks   = Array.isArray(main.top3) ? main.top3.slice(0,3) : [];
-  const answers = main.answers || {};
+  // Guest (no user_id)
+  // we ONLY have this quiz_results row. We'll return placeholders.
+  const picks   = [];
+  const answers = {};
 
   const profile = {
     email: "—",
