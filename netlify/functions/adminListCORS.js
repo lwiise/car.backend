@@ -1,142 +1,123 @@
 // netlify/functions/adminListCORS.js
 import cors, { json } from "./cors.js";
-import {
-  getAdminClient,
-  getUserFromAuth,
-  parseJSON,
-  ADMIN_EMAILS
-} from "./_supabaseAdmin.js";
+import { getAdminClient, parseJSON } from "./_supabase.js";
 
-export const handler = cors(async function (event, context) {
-  // 1. auth / allowlist
-  const { user } = await getUserFromAuth(event);
-
-  if (!user) {
-    return json(401, { error: "unauthorized" });
-  }
-  if (!ADMIN_EMAILS.includes(user.email)) {
-    return json(403, { error: "forbidden" });
-  }
-
-  // 2. read request body
-  const body = parseJSON(event.body);
-
-  const page = Number(body.page || 1);
-  const pageSize = Number(body.pageSize || 20);
-  const type = body.type || null; // "user" | "guest" | null
-  const search = (body.search || "").toLowerCase().trim();
-  // body.resultsOnly is ignored for now but kept for compat
-
-  const from = (page - 1) * pageSize;
-  const to = from + pageSize - 1;
-
+export default cors(async (event) => {
   const supa = getAdminClient();
+  const body = parseJSON(event.body || "{}");
 
-  // 3. pull recent quiz results
-  let query = supa
+  const page      = Math.max(1, Number(body.page) || 1);
+  const pageSize  = Math.min(Number(body.pageSize) || 20, 200);
+  const offset    = (page - 1) * pageSize;
+  const to        = offset + pageSize - 1;
+
+  const type      = body.type || null;      // "user" | "guest" | null ("all")
+  const rawSearch = (body.search || "").trim().toLowerCase();
+  // resultsOnly is coming from the frontend but we don't really need it now
+  // const resultsOnly = !!body.resultsOnly;
+
+  // 1. base query: pull recent quiz results
+  // we always read from `results`
+  // columns we need for display
+  let q = supa
     .from("results")
-    .select("id, created_at, user_id, top3, answers", { count: "exact" })
+    .select("id, created_at, top3, answers, user_id")
     .order("created_at", { ascending: false })
-    .range(from, to);
+    .range(offset, to);
 
-  // filter by type if requested
+  // Filter by user/guest
   if (type === "user") {
-    query = query.not("user_id", "is", null);
+    // signed-in people => user_id is NOT NULL
+    q = q.not("user_id", "is", null);
   } else if (type === "guest") {
-    query = query.is("user_id", null);
+    // anonymous => user_id IS NULL
+    q = q.is("user_id", null);
   }
 
-  const { data: rows, error } = await query;
-
+  const { data: rows, error } = await q;
   if (error) {
-    console.error("adminListCORS results error:", error);
-    return json(500, {
-      error: "db_error",
-      detail: String(error.message || error)
-    });
+    console.error("adminListCORS: results query failed:", error);
+    return json(500, { error: "db_error", detail: String(error.message || error) });
   }
 
-  // 4. fetch matching profiles in batch
-  const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
+  // 2. collect user_ids so we can join profile + email
+  const userIds = [...new Set(rows.filter(r => r.user_id).map(r => r.user_id))];
+
   let profilesById = {};
+  let usersById = {};
 
   if (userIds.length) {
+    // profiles table (your custom table with optional user info)
     const { data: profs, error: pErr } = await supa
       .from("profiles")
-      .select(
-        "user_id, full_name, first_name, nickname, name, email, country, state, gender, dob, created_at, updated_at"
-      )
-      .in("user_id", userIds);
+      .select("id, full_name, nickname, country, state, gender, dob, created_at, updated_at")
+      .in("id", userIds);
 
-    if (pErr) {
-      console.warn("adminListCORS profile error:", pErr);
-    } else {
-      profilesById = Object.fromEntries(
-        (profs || []).map(p => [p.user_id, p])
-      );
-    }
+    if (pErr) console.warn("adminListCORS: profiles fetch err", pErr);
+    (profs || []).forEach(p => { profilesById[p.id] = p; });
+
+    // auth.users table (Supabase internal) for emails
+    const { data: authUsers, error: uErr } = await supa
+      .from("auth.users")
+      .select("id, email")
+      .in("id", userIds);
+
+    if (uErr) console.warn("adminListCORS: auth.users fetch err", uErr);
+    (authUsers || []).forEach(u => { usersById[u.id] = u; });
   }
 
-  // 5. shape data for frontend rows
-  const items = rows.map(r => {
+  // 3. decorate rows
+  let items = rows.map(r => {
     const prof = profilesById[r.user_id] || {};
-
-    const displayName =
-      prof.full_name ||
-      prof.first_name ||
-      prof.nickname ||
-      prof.name ||
-      prof.email ||
-      "";
+    const au   = usersById[r.user_id]   || {};
 
     const top3 = Array.isArray(r.top3) ? r.top3 : [];
     const firstPick = top3[0]
       ? `${top3[0].brand || ""} ${top3[0].model || ""}`.trim()
-      : "";
+      : "—";
+
+    // “name” we’ll try in priority order
+    const displayName =
+      prof.full_name ||
+      prof.nickname ||
+      au.email ||
+      "—";
+
+    const email = au.email || "—";
 
     return {
+      id: r.id,
+      user_id: r.user_id || null,
       name: displayName,
-      nickname: prof.nickname || null,
-      full_name: prof.full_name || null,
-      user_name: displayName,
-
-      email: prof.email || null,
-      user_email: prof.email || null,
-
+      email,
       created_at: r.created_at,
-      updated_at: prof.updated_at || r.created_at,
-
       top3,
       first_pick: firstPick,
-      type: r.user_id ? "User" : "Guest"
+      type: r.user_id ? "User" : "Guest",
     };
   });
 
-  // 6. apply search (server-side filter for "min 2 chars")
-  let filtered = items;
-  if (search && search.length >= 2) {
-    filtered = items.filter(it => {
-      const haystack = [
-        it.name,
-        it.email,
-        it.first_pick,
-        ...(Array.isArray(it.top3)
-          ? it.top3.map(
-              c =>
-                `${c.brand || ""} ${c.model || ""} ${c.reason || ""}`
-            )
-          : [])
-      ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(search);
+  // 4. apply search (client sends >=2 chars)
+  if (rawSearch && rawSearch.length >= 2) {
+    const s = rawSearch;
+    items = items.filter(it => {
+      // search in name, email, first pick, and top3 car names / reasons
+      const inName   = (it.name   || "").toLowerCase().includes(s);
+      const inEmail  = (it.email  || "").toLowerCase().includes(s);
+      const inPick   = (it.first_pick || "").toLowerCase().includes(s);
+      const inCars   = Array.isArray(it.top3) && it.top3.some(c => {
+        const carName = `${c.brand || ""} ${c.model || ""}`.toLowerCase();
+        const carWhy  = (c.reason || "").toLowerCase();
+        return carName.includes(s) || carWhy.includes(s);
+      });
+      return inName || inEmail || inPick || inCars;
     });
   }
 
-  const hasMore = rows.length === pageSize;
-
+  // 5. reply
+  // hasMore here is naive (local page window). Good enough for now.
   return json(200, {
-    items: filtered,
-    hasMore
+    items,
+    hasMore: items.length === pageSize,
   });
 });
