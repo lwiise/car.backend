@@ -7,28 +7,49 @@ import {
   isAllowedAdmin
 } from "./_supabase.js";
 
+function grabSummary(row) {
+  return (
+    row.top_summary ??
+    row.top3 ??
+    row.top_3 ??
+    row.summary ??
+    ""
+  );
+}
+
+// Build the "picks" section for the modal
+function buildPicks(row) {
+  const primary = row.first_pick || "—";
+  const blurb   = grabSummary(row) || "";
+  return [{
+    brand: primary,  // we don't have clean brand/model split, so we stuff in brand
+    model: "",
+    reason: blurb
+  }];
+}
+
 export const handler = cors(async (event) => {
   if (event.httpMethod !== "POST") {
     return json(405, { error: "method_not_allowed" });
   }
 
-  // must be admin
+  // admin check
   const { user } = await getUserFromAuth(event);
   if (!isAllowedAdmin(user)) {
     return json(403, { error: "forbidden" });
   }
 
-  const { id, type = "all" } = parseJSON(event.body) || {};
+  const { id } = parseJSON(event.body) || {};
   if (!id) {
     return json(400, { error: "missing_id" });
   }
 
   const supa = getAdminClient();
 
-  // main quiz_results row
+  // 1. pull the quiz_results row
   const { data: baseRows, error: baseErr } = await supa
     .from("quiz_results")
-    .select("id,created_at,user_id,first_pick,top_summary,answers")
+    .select("*")
     .eq("id", id)
     .limit(1);
 
@@ -45,24 +66,8 @@ export const handler = cors(async (event) => {
     return json(404, { error: "not_found", detail: "row not found" });
   }
 
-  // We'll build this so the modal stays happy.
-  function buildPicks(row) {
-    // We only stored first_pick (string like "MG ZS EV")
-    // and top_summary (string like "MG ZS EV • Geely Coolray • ...")
-    // We'll wrap that into a simple "picks" array.
-    const primary = row.first_pick || "—";
-    const blurb   = row.top_summary || "";
-
-    return [{
-      brand: primary,   // we don't have brand/model split anymore
-      model: "",
-      reason: blurb
-    }];
-  }
-
-  // Signed-in user?
+  // 2. If user_id exists, fetch profile + count all their results
   if (main.user_id) {
-    // profile data
     const { data: profRows, error: profErr } = await supa
       .from("profiles")
       .select(
@@ -84,7 +89,7 @@ export const handler = cors(async (event) => {
       return json(404, { error: "not_found", detail: "profile not found" });
     }
 
-    // ALL quiz_results rows for that same user (so we can count how many)
+    // count all quiz_results for this user_id
     const { data: resRows, error: resErr } = await supa
       .from("quiz_results")
       .select("id")
@@ -126,7 +131,7 @@ export const handler = cors(async (event) => {
     });
   }
 
-  // Guest path: user_id is null
+  // 3. Guest path
   const picks = buildPicks(main);
 
   return json(200, {
