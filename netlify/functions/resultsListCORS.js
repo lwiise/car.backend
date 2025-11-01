@@ -1,49 +1,52 @@
 // netlify/functions/resultsListCORS.js
-import cors, { json } from "./cors.js";
-import { supaAdmin } from "./supabaseClient.js";
-import { getUserIdFromAuthHeader } from "./authUtils.js";
+const { cors } = require("./cors");
+const {
+  getAdminClient,
+  getUserFromAuth,
+} = require("./_supabase");
 
-export const handler = cors(async (event) => {
-  if (event.httpMethod !== "GET") {
-    return json(405, { error: "method_not_allowed" });
+module.exports = cors(async (event) => {
+  const { user, token } = await getUserFromAuth(event);
+  if (!user || !token) {
+    return {
+      statusCode: 401,
+      body: { error: "Unauthorized" },
+    };
   }
 
-  // which user is asking?
-  // we try Authorization header first.
-  let userId = getUserIdFromAuthHeader(event.headers || {});
+  const supa = getAdminClient();
 
-  // Fallback: allow ?uid=... for debugging if token missing,
-  // but in prod the Authorization header should cover it.
-  if (!userId) {
-    const params = new URLSearchParams(event.queryStringParameters || {});
-    userId = params.get("uid") || null;
-  }
+  // read query params
+  const qs = new URLSearchParams(event.queryStringParameters || {});
+  const limit = Number(qs.get("limit") || 10);
+  const offset = Number(qs.get("offset") || 0);
 
-  if (!userId) {
-    return json(401, { error: "no_auth", detail: "no user id" });
-  }
+  // we allow uid in the URL but we DO NOT let you fetch a different uid
+  const requestedUid = qs.get("uid") || "";
+  const safeUid = requestedUid && requestedUid === user.id
+    ? requestedUid
+    : user.id;
 
-  const params = new URLSearchParams(event.queryStringParameters || {});
-  const limit  = Math.min(parseInt(params.get("limit")  || "10", 10), 50);
-  const offset = parseInt(params.get("offset") || "0", 10);
-
-  // fetch newest first
-  const { data, error } = await supaAdmin
+  // grab that user's recent results
+  const { data, error } = await supa
     .from("results")
     .select("id, created_at, top3, answers")
-    .eq("user_id", userId)
+    .eq("user_id", safeUid)
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
   if (error) {
-    console.error("resultsList select error:", error);
-    return json(500, {
-      error: "db_fetch_failed",
-      detail: error.message || String(error)
-    });
+    console.error("resultsListCORS error:", error);
+    return {
+      statusCode: 500,
+      body: { error: "DB error loading results" },
+    };
   }
 
-  return json(200, {
-    items: data || []
-  });
+  return {
+    statusCode: 200,
+    body: {
+      items: Array.isArray(data) ? data : [],
+    },
+  };
 });
