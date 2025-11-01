@@ -1,3 +1,37 @@
+import cors, { json } from "./cors.js";
+import { sbAdmin } from "./_supabase.js";
+
+// --- BEGIN ADMIN AUTH BLOCK ---
+const ALLOWED_ADMINS = (process.env.ADMIN_EMAILS || "")
+  .split(",")
+  .map(e => e.trim().toLowerCase())
+  .filter(Boolean);
+
+async function requireAdmin(supabase, event) {
+  const authHeader = event.headers?.authorization || "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    return { ok:false, statusCode:401, error:"Missing bearer token" };
+  }
+
+  // validate token with Supabase
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data?.user) {
+    return { ok:false, statusCode:401, error:"Unauthorized" };
+  }
+
+  const email = (data.user.email || "").toLowerCase();
+
+  // if you set ADMIN_EMAILS, only those emails can get in
+  if (ALLOWED_ADMINS.length && !ALLOWED_ADMINS.includes(email)) {
+    return { ok:false, statusCode:403, error:"Forbidden" };
+  }
+
+  return { ok:true, user:data.user };
+}
+// --- END ADMIN AUTH BLOCK ---
+
+
 // netlify/functions/adminUserDetails.js
 import cors, { json } from "./cors.js";
 import { sbAdmin } from "./_supabase.js";
