@@ -1,64 +1,41 @@
 // netlify/functions/_supabaseAdmin.js
 import { createClient } from "@supabase/supabase-js";
 
-// --- ENV / CONFIG -------------------------------------------------
-
+// env
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL;
 
-const SERVICE_ROLE =
+const SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE;
 
-// who is allowed to view admin dashboard
-// keep your real admin email(s) here:
-export const ADMIN_EMAILS = [
-  "kkk1@gmail.com",
-];
+export const ALLOWED_ORIGIN =
+  process.env.ALLOWED_ORIGIN || "*";
 
-// CORS: allow your site to call these functions from the browser
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
-export const corsHeaders = {
-  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Methods": "POST,OPTIONS",
-};
+export const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
+  .split(",")
+  .map(e => e.trim().toLowerCase())
+  .filter(Boolean);
 
-if (!SUPABASE_URL || !SERVICE_ROLE) {
-  console.error("Missing Supabase env vars. Check SUPABASE_URL / SERVICE_ROLE.");
-}
-
-// create high-privilege client (service_role -> bypass RLS, can read auth.users)
+// create a full-access Supabase client (service_role bypasses RLS)
 export function getAdminClient() {
-  return createClient(SUPABASE_URL, SERVICE_ROLE, {
-    auth: { persistSession: false },
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false }
   });
 }
 
-// tiny helper so we don't repeat JSON response boilerplate
-export function jsonResponse(statusCode, bodyObj) {
-  return {
-    statusCode,
-    headers: {
-      "Content-Type": "application/json",
-      ...corsHeaders,
-    },
-    body: JSON.stringify(bodyObj ?? null),
-  };
-}
-
-// parse request body safely
-export function parseBody(body) {
+// tiny safe JSON parser
+export function parseJSON(str) {
   try {
-    return body ? JSON.parse(body) : {};
+    return str ? JSON.parse(str) : {};
   } catch {
     return {};
   }
 }
 
-// read Authorization header and resolve the Supabase user
-export async function getRequester(event) {
+// pull "Authorization: Bearer <jwt>" from request and ask Supabase who that is
+export async function getUserFromAuth(event) {
   const authHeader =
     event.headers?.authorization ||
     event.headers?.Authorization ||
@@ -76,19 +53,68 @@ export async function getRequester(event) {
   const { data, error } = await supa.auth.getUser(token);
 
   if (error) {
-    console.warn("auth.getUser error:", error);
+    console.warn("getUserFromAuth error:", error);
     return { token, user: null };
   }
 
   return { token, user: data?.user || null };
 }
 
-// shortcut for forbidden
-export function forbidden() {
-  return jsonResponse(403, { error: "forbidden" });
+// check that caller is logged in AND allowed as admin
+export async function requireAdmin(event) {
+  const { token, user } = await getUserFromAuth(event);
+
+  if (!user) {
+    // not even logged in
+    return {
+      ok: false,
+      statusCode: 401,
+      payload: { error: "unauthorized" },
+      token,
+      user: null
+    };
+  }
+
+  const emailLc = (user.email || "").toLowerCase();
+  if (!ADMIN_EMAILS.includes(emailLc)) {
+    // logged in but not an admin email
+    return {
+      ok: false,
+      statusCode: 403,
+      payload: { error: "forbidden" },
+      token,
+      user
+    };
+  }
+
+  return { ok: true, token, user };
 }
 
-// shortcut for OPTIONS preflight
-export function handleOptions() {
-  return { statusCode: 200, headers: corsHeaders, body: "" };
+// CORS headers (same everywhere so frontend can POST from your admin page)
+function corsHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "POST, OPTIONS"
+  };
+}
+
+// normal JSON response
+export function jsonResponse(statusCode, data) {
+  return {
+    statusCode,
+    headers: corsHeaders(),
+    body: JSON.stringify(data ?? null)
+  };
+}
+
+// OPTIONS preflight
+export function preflightResponse() {
+  return {
+    statusCode: 200,
+    headers: corsHeaders(),
+    body: ""
+  };
 }
