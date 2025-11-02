@@ -5,11 +5,7 @@ import {
   parseJSON,
 } from "./_supabaseAdmin.js";
 
-/**
- * Small CORS helper. For now we allow any origin so we stop getting 403
- * and stop forcing you back into the login modal over and over.
- * When you're done testing, we can lock this down again.
- */
+// Basic CORS helper (we keep it open so Webflow/admin page can talk to Netlify)
 function corsHeaders(origin) {
   return {
     "Access-Control-Allow-Origin": origin || "*",
@@ -27,7 +23,7 @@ function send(statusCode, bodyObj, origin) {
 }
 
 /**
- * Expected request body from admin page:
+ * Frontend sends:
  * {
  *   page: number,
  *   pageSize: number,
@@ -36,7 +32,7 @@ function send(statusCode, bodyObj, origin) {
  *   resultsOnly: boolean
  * }
  *
- * We reply:
+ * We respond:
  * {
  *   items: [
  *     {
@@ -53,11 +49,16 @@ function send(statusCode, bodyObj, origin) {
  *   ],
  *   hasMore: boolean
  * }
+ *
+ * NOTE:
+ * - We're pulling from Supabase Auth (auth.users) via auth.admin.listUsers()
+ *   using the service role.
+ * - We're not showing guests yet. Guests will come from quiz results later.
  */
 export async function handler(event) {
   const origin = event.headers?.origin || "*";
 
-  // Browser CORS preflight
+  // Handle preflight
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 200,
@@ -70,92 +71,103 @@ export async function handler(event) {
     return send(405, { error: "method_not_allowed" }, origin);
   }
 
-  // ---------- AUTH ----------
-  // We only block if there is literally NO Supabase session.
-  // (Before, we also checked origin + admin email and that caused 403 loops.)
+  // ---- AUTH CHECK ----
+  // We ONLY require that there is *some* valid Supabase user token.
+  // We do NOT block you anymore for origin or specific email. That loop was hell.
   const { token, user } = await getUserFromAuth(event);
   if (!token || !user) {
     return send(401, { error: "unauthorized" }, origin);
   }
 
-  // ---------- INPUT ----------
+  // ---- INPUT ----
   const body = parseJSON(event.body);
-  const page      = Number(body.page)      || 1;
-  const pageSize  = Number(body.pageSize)  || 20;
-  const search    = (body.search || "").trim();
-  const typeReq   = body.type === "guest" ? "guest"
-                   : body.type === "user" ? "user"
-                   : null; // 'all' or null → show users for now
-  // resultsOnly is ignored here
+  const page     = Number(body.page)     || 1;
+  const pageSize = Number(body.pageSize) || 20;
+  const rawSearch = (body.search || "").trim();
+  const typeReq = body.type === "guest"
+    ? "guest"
+    : body.type === "user"
+    ? "user"
+    : null; // "all" or null means show users for now
 
-  // We’ll just use the "profiles" table as the source of truth for now.
-  // Guests (people who never saved an account) won't show yet. We'll add them
-  // later by pulling from your quiz_results table once we confirm its schema.
+  // If user selects "guest", we don't have guest storage wired here yet,
+  // so just return empty list (no crash, frontend still works).
   if (typeReq === "guest") {
-    return send(200, { items: [], hasMore: false }, origin);
-  }
-
-  // ---------- DB QUERY ----------
-  const supa = getAdminClient();
-
-  // Pagination math for Supabase range()
-  const start = (page - 1) * pageSize;
-  const end   = start + pageSize - 1;
-
-  // Build base query: newest first
-  let query = supa
-    .from("profiles")
-    .select("id, created_at, email, name, nickname", { count: "exact" })
-    .order("created_at", { ascending: false })
-    .range(start, end);
-
-  // Text search across email / name / nickname
-  if (search) {
-    // Supabase .or() syntax: 'col.ilike.%term%,othercol.ilike.%term%'
-    const like = `%${search}%`;
-    query = query.or(
-      `email.ilike.${like},name.ilike.${like},nickname.ilike.${like}`
-    );
-  }
-
-  const { data: rows, error, count } = await query;
-
-  if (error) {
-    console.error("adminListCORS db_list_failed:", error);
     return send(
-      500,
-      {
-        error: "db_list_failed",
-        detail: error.message || String(error),
-      },
+      200,
+      { items: [], hasMore: false },
       origin
     );
   }
 
-  // ---------- SHAPE RESPONSE ----------
-  // The frontend expects fields like:
-  //   first_pick, top_summary, top3[], type
-  // If we don't have car picks here yet, we just fill placeholders "—".
-  const items = (rows || []).map(r => ({
-    id: r.id,
-    created_at: r.created_at,
-    email: r.email || "—",
-    name: r.name || r.nickname || "—",
-    first_pick: "—",  // we’ll wire real #1 pick later
-    top_summary: "—", // we’ll wire real top-3 summary later
-    top3: [],         // placeholder for modal
-    type: "User"
-  }));
+  // ---- FETCH USERS FROM SUPABASE AUTH ----
+  // We use the service-role client so we can call auth.admin.listUsers().
+  const supa = getAdminClient();
 
-  const totalCount = typeof count === "number" ? count : items.length;
-  const hasMore = end + 1 < totalCount;
+  // listUsers is paginated by page & perPage
+  // page is 1-based, perPage max is usually fine < 1000.
+  const { data: listData, error: listErr } = await supa.auth.admin.listUsers({
+    page,
+    perPage: pageSize,
+  });
+
+  if (listErr) {
+    console.error("adminListCORS listUsers error:", listErr);
+    return send(
+      500,
+      { error: "auth_list_failed", detail: listErr.message || String(listErr) },
+      origin
+    );
+  }
+
+  const rawUsers = listData?.users || [];
+
+  // ---- OPTIONAL SEARCH FILTER ON EMAIL / NAME ----
+  // We do it in JS because Supabase auth.admin.listUsers() doesn't give us a filter.
+  let filteredUsers = rawUsers;
+  if (rawSearch && rawSearch.length >= 2) {
+    const term = rawSearch.toLowerCase();
+    filteredUsers = rawUsers.filter(u => {
+      const email = (u.email || "").toLowerCase();
+      const nm =
+        (u.user_metadata?.name ||
+         u.user_metadata?.full_name ||
+         u.user_metadata?.nickname ||
+         ""
+        ).toLowerCase();
+      return email.includes(term) || nm.includes(term);
+    });
+  }
+
+  // ---- SHAPE THE ROWS FOR THE FRONTEND TABLE ----
+  const items = filteredUsers.map(u => {
+    const created_at = u.created_at || u.last_sign_in_at || null;
+    const name =
+      u.user_metadata?.name ||
+      u.user_metadata?.full_name ||
+      u.user_metadata?.nickname ||
+      "—";
+
+    return {
+      id: u.id,
+      created_at,
+      email: u.email || "—",
+      name,
+      // we don't yet stitch car picks here -> placeholder
+      first_pick: "—",
+      top_summary: "—",
+      top3: [],
+      type: "User"
+    };
+  });
+
+  // ---- PAGINATION MARKER ----
+  // hasMore = did we fill the pageSize completely?
+  const hasMore = filteredUsers.length === pageSize;
 
   return send(
     200,
-    {
-      items,
-      hasMore
-    },
+    { items, hasMore },
     origin
   );
 }
