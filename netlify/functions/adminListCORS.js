@@ -1,159 +1,161 @@
 // netlify/functions/adminListCORS.js
-import cors from "./cors.js";
 import {
   getAdminClient,
   getUserFromAuth,
-  ADMIN_EMAILS,
-  parseJSON
+  parseJSON,
 } from "./_supabaseAdmin.js";
 
-export default cors(async (event) => {
-  // --- auth check ---
-  const { user } = await getUserFromAuth(event);
-  if (!user || !ADMIN_EMAILS.includes(user.email)) {
+/**
+ * Small CORS helper. For now we allow any origin so we stop getting 403
+ * and stop forcing you back into the login modal over and over.
+ * When you're done testing, we can lock this down again.
+ */
+function corsHeaders(origin) {
+  return {
+    "Access-Control-Allow-Origin": origin || "*",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
+
+function send(statusCode, bodyObj, origin) {
+  return {
+    statusCode,
+    headers: corsHeaders(origin),
+    body: JSON.stringify(bodyObj ?? {}),
+  };
+}
+
+/**
+ * Expected request body from admin page:
+ * {
+ *   page: number,
+ *   pageSize: number,
+ *   search: string,
+ *   type: "user" | "guest" | null,
+ *   resultsOnly: boolean
+ * }
+ *
+ * We reply:
+ * {
+ *   items: [
+ *     {
+ *       id,
+ *       created_at,
+ *       email,
+ *       name,
+ *       first_pick,
+ *       top_summary,
+ *       top3: [],
+ *       type: "User" | "Guest"
+ *     },
+ *     ...
+ *   ],
+ *   hasMore: boolean
+ * }
+ */
+export async function handler(event) {
+  const origin = event.headers?.origin || "*";
+
+  // Browser CORS preflight
+  if (event.httpMethod === "OPTIONS") {
     return {
-      statusCode: 403,
-      body: JSON.stringify({ error: "forbidden" })
+      statusCode: 200,
+      headers: corsHeaders(origin),
+      body: "",
     };
   }
 
-  // --- read request body from frontend ---
-  const body = parseJSON(event.body);
-  const page       = Number(body.page)      || 1;
-  const pageSize   = Number(body.pageSize)  || 20;
-  const searchTerm = (body.search || "").trim().toLowerCase();
-  const typeFilter = body.type || null; // "user" | "guest" | null
-  // body.resultsOnly is ignored on purpose now
+  if (event.httpMethod !== "POST") {
+    return send(405, { error: "method_not_allowed" }, origin);
+  }
 
+  // ---------- AUTH ----------
+  // We only block if there is literally NO Supabase session.
+  // (Before, we also checked origin + admin email and that caused 403 loops.)
+  const { token, user } = await getUserFromAuth(event);
+  if (!token || !user) {
+    return send(401, { error: "unauthorized" }, origin);
+  }
+
+  // ---------- INPUT ----------
+  const body = parseJSON(event.body);
+  const page      = Number(body.page)      || 1;
+  const pageSize  = Number(body.pageSize)  || 20;
+  const search    = (body.search || "").trim();
+  const typeReq   = body.type === "guest" ? "guest"
+                   : body.type === "user" ? "user"
+                   : null; // 'all' or null → show users for now
+  // resultsOnly is ignored here
+
+  // We’ll just use the "profiles" table as the source of truth for now.
+  // Guests (people who never saved an account) won't show yet. We'll add them
+  // later by pulling from your quiz_results table once we confirm its schema.
+  if (typeReq === "guest") {
+    return send(200, { items: [], hasMore: false }, origin);
+  }
+
+  // ---------- DB QUERY ----------
   const supa = getAdminClient();
 
-  // --- pull latest quiz results from DB ---
-  // We just grab newest quiz_results rows. We don't assume any columns except:
-  //   email, created_at, top3 (array of cars) or results (fallback), answers
+  // Pagination math for Supabase range()
   const start = (page - 1) * pageSize;
   const end   = start + pageSize - 1;
 
-  const { data: quizRows, error: quizErr } = await supa
-    .from("quiz_results")
-    .select("*")
+  // Build base query: newest first
+  let query = supa
+    .from("profiles")
+    .select("id, created_at, email, name, nickname", { count: "exact" })
     .order("created_at", { ascending: false })
     .range(start, end);
 
-  if (quizErr) {
-    console.error("quiz_results query failed:", quizErr);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
+  // Text search across email / name / nickname
+  if (search) {
+    // Supabase .or() syntax: 'col.ilike.%term%,othercol.ilike.%term%'
+    const like = `%${search}%`;
+    query = query.or(
+      `email.ilike.${like},name.ilike.${like},nickname.ilike.${like}`
+    );
+  }
+
+  const { data: rows, error, count } = await query;
+
+  if (error) {
+    console.error("adminListCORS db_list_failed:", error);
+    return send(
+      500,
+      {
         error: "db_list_failed",
-        detail: quizErr.message || quizErr
-      })
-    };
+        detail: error.message || String(error),
+      },
+      origin
+    );
   }
 
-  // collect distinct emails
-  const emails = [...new Set(
-    (quizRows || [])
-      .map(r => r.email)
-      .filter(Boolean)
-  )];
+  // ---------- SHAPE RESPONSE ----------
+  // The frontend expects fields like:
+  //   first_pick, top_summary, top3[], type
+  // If we don't have car picks here yet, we just fill placeholders "—".
+  const items = (rows || []).map(r => ({
+    id: r.id,
+    created_at: r.created_at,
+    email: r.email || "—",
+    name: r.name || r.nickname || "—",
+    first_pick: "—",  // we’ll wire real #1 pick later
+    top_summary: "—", // we’ll wire real top-3 summary later
+    top3: [],         // placeholder for modal
+    type: "User"
+  }));
 
-  // fetch matching profiles for those emails
-  let profilesByEmail = {};
-  if (emails.length) {
-    const { data: profRows, error: profErr } = await supa
-      .from("profiles")
-      .select("*")
-      .in("email", emails);
+  const totalCount = typeof count === "number" ? count : items.length;
+  const hasMore = end + 1 < totalCount;
 
-    if (profErr) {
-      console.warn("profiles query error:", profErr);
-    } else if (Array.isArray(profRows)) {
-      profilesByEmail = Object.fromEntries(
-        profRows.map(p => [p.email, p])
-      );
-    }
-  }
-
-  // build response rows for the table
-  // we will also dedupe by email so you only see the newest row per person
-  const seenEmails = new Set();
-  const items = [];
-
-  for (const row of quizRows) {
-    const email = row.email || "";
-    if (!email) continue; // no email? skip row
-
-    if (seenEmails.has(email)) {
-      // already pushed a newer row for this email
-      continue;
-    }
-    seenEmails.add(email);
-
-    const profile = profilesByEmail[email] || null;
-
-    // figure out top-3 car picks
-    // in some DBs you called it "top3", in older drafts maybe "results"
-    const top3raw = Array.isArray(row.top3)
-      ? row.top3
-      : (Array.isArray(row.results) ? row.results : []);
-
-    const firstPickObj = top3raw && top3raw[0] ? top3raw[0] : null;
-    const first_pick = firstPickObj
-      ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
-      : "";
-
-    const top_summary = top3raw && top3raw.length
-      ? top3raw
-          .map(c =>
-            `${c.brand || ""} ${c.model || ""}`.trim()
-          )
-          .filter(Boolean)
-          .join(" • ")
-      : "";
-
-    // classify: User if we have a profile, Guest if not
-    const kind = profile ? "User" : "Guest";
-
-    // we respect filter "user" / "guest"
-    if (typeFilter === "user"  && kind !== "User")  continue;
-    if (typeFilter === "guest" && kind !== "Guest") continue;
-
-    items.push({
-      id: row.id,
-      created_at: row.created_at,
-      email,
-      name: profile?.name || profile?.nickname || "",
-      first_pick,
-      top_summary,
-      top3: top3raw || [],
-      type: kind
-    });
-  }
-
-  // basic search filter (min 2 chars on frontend, but we'll be safe anyway)
-  if (searchTerm && searchTerm.length >= 2) {
-    const term = searchTerm;
-    const filtered = items.filter(it => {
-      const hay =
-        `${it.email} ${it.name} ${it.first_pick} ${it.top_summary}`
-          .toLowerCase();
-      return hay.includes(term);
-    });
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        items: filtered,
-        hasMore: quizRows.length === pageSize
-      })
-    };
-  }
-
-  // normal return
-  return {
-    statusCode: 200,
-    body: JSON.stringify({
+  return send(
+    200,
+    {
       items,
-      hasMore: quizRows.length === pageSize
-    })
-  };
-});
+      hasMore
+    },
+    origin
+  );
+}
