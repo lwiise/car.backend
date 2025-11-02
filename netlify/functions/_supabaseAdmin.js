@@ -1,41 +1,55 @@
 // netlify/functions/_supabaseAdmin.js
 import { createClient } from "@supabase/supabase-js";
 
-// --------------- CONFIG -----------------
+// --- ENV / CONFIG -------------------------------------------------
 
-// Supabase project URL (example: https://xxxx.supabase.co)
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL;
 
-// Service role key (full access, ONLY on server)
 const SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE;
 
-// optional allowlist for real lock-down (we're NOT enforcing this in the
-// dashboard endpoints right now because it caused the infinite login loop)
+// who is allowed to view admin dashboard
+// keep your real admin email(s) here:
 export const ADMIN_EMAILS = [
-  "kkk1@gmail.com"
+  "kkk1@gmail.com",
 ];
 
-// Safety check in logs (don't throw here because we still want the
-// function to boot so you can see errors in Netlify logs instead of crash)
+// CORS: allow your site to call these functions from the browser
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
+export const corsHeaders = {
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "POST,OPTIONS",
+};
+
 if (!SUPABASE_URL || !SERVICE_ROLE) {
-  console.error("⚠ Missing Supabase env vars. SUPABASE_URL or SERVICE_ROLE is undefined.");
+  console.error("Missing Supabase env vars. Check SUPABASE_URL / SERVICE_ROLE.");
 }
 
-// --------------- HELPERS -----------------
-
-// Get a server-side Supabase client that can read any row
+// create high-privilege client (service_role -> bypass RLS, can read auth.users)
 export function getAdminClient() {
   return createClient(SUPABASE_URL, SERVICE_ROLE, {
-    auth: { persistSession: false }
+    auth: { persistSession: false },
   });
 }
 
-// Parse JSON request body safely
-export function parseJSON(body) {
+// tiny helper so we don't repeat JSON response boilerplate
+export function jsonResponse(statusCode, bodyObj) {
+  return {
+    statusCode,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders,
+    },
+    body: JSON.stringify(bodyObj ?? null),
+  };
+}
+
+// parse request body safely
+export function parseBody(body) {
   try {
     return body ? JSON.parse(body) : {};
   } catch {
@@ -43,8 +57,8 @@ export function parseJSON(body) {
   }
 }
 
-// Pull the Supabase user from Authorization: Bearer <jwt>
-export async function getUserFromAuth(event) {
+// read Authorization header and resolve the Supabase user
+export async function getRequester(event) {
   const authHeader =
     event.headers?.authorization ||
     event.headers?.Authorization ||
@@ -67,4 +81,14 @@ export async function getUserFromAuth(event) {
   }
 
   return { token, user: data?.user || null };
+}
+
+// shortcut for forbidden
+export function forbidden() {
+  return jsonResponse(403, { error: "forbidden" });
+}
+
+// shortcut for OPTIONS preflight
+export function handleOptions() {
+  return { statusCode: 200, headers: corsHeaders, body: "" };
 }
