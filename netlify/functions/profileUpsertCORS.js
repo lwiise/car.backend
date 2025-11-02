@@ -1,42 +1,26 @@
 // netlify/functions/profileUpsertCORS.js
-import cors, { json } from "./cors.js";
 import {
   getAdminClient,
   parseJSON,
   getUserFromAuth,
-} from "./_supabase.js";
+  jsonResponse,
+  preflightResponse
+} from "./_supabaseAdmin.js";
 
-function firstPickFromTop3(top3) {
-  if (!Array.isArray(top3) || top3.length === 0) return null;
-  const c0 = top3[0] || {};
-  const label = [c0.brand, c0.model].filter(Boolean).join(" ").trim();
-  return label || null;
-}
-
-function summaryFromTop3(top3) {
-  if (!Array.isArray(top3)) return null;
-  return top3
-    .slice(0, 3)
-    .map(c =>
-      [c.brand, c.model].filter(Boolean).join(" ").trim()
-    )
-    .filter(Boolean)
-    .join(" • ");
-}
-
-export const handler = cors(async (event) => {
-  if (event.httpMethod !== "POST") {
-    return json(405, { error: "method_not_allowed" });
+export const handler = async (event) => {
+  if (event.httpMethod === "OPTIONS") {
+    return preflightResponse();
   }
 
-  // who's calling?
+  // this one is NOT admin-only.
+  // any logged-in user can hit it (because they're saving their own data).
   const { user } = await getUserFromAuth(event);
   if (!user) {
-    return json(401, { error: "unauthorized" });
+    return jsonResponse(401, { error: "unauthorized" });
   }
-  const userId = user.id;
 
-  // body from the browser
+  const body = parseJSON(event.body || "{}");
+
   const {
     email,
     name,
@@ -47,68 +31,49 @@ export const handler = cors(async (event) => {
     state,
     answers,
     top3
-  } = parseJSON(event.body);
+  } = body;
 
   const supa = getAdminClient();
 
-  // 1. upsert profile
-  // profiles table is assumed:
-  // id (uuid, PK = auth user id)
-  // email text
-  // name text
-  // nickname text
-  // gender text
-  // dob date
-  // country text
-  // state text
-  // created_at timestamptz default now()
-  // updated_at timestamptz
+  // 1. upsert profile info for this Supabase user.id
+  const profileRow = {
+    id: user.id,
+    email: user.email || email || null,
+    name: name || null,
+    nickname: nickname || null,
+    dob: dob || null,
+    gender: gender || null,
+    country: country || null,
+    state: state || null,
+    updated_at: new Date().toISOString()
+  };
+
   const { error: upErr } = await supa
     .from("profiles")
-    .upsert([{
-      id: userId,
-      email,
-      name,
-      nickname,
-      gender,
-      dob,
-      country,
-      state,
-      updated_at: new Date().toISOString()
-    }], { onConflict: "id" });
+    .upsert(profileRow, { onConflict: "id" });
 
   if (upErr) {
-    console.error("[profileUpsert] profile upsert error:", upErr);
-    return json(500, {
+    console.error("profile upsert error", upErr);
+    return jsonResponse(500, {
       error: "profile_upsert_failed",
-      detail: upErr.message
+      detail: upErr.message || String(upErr)
     });
   }
 
-  // 2. insert quiz_results row
-  // quiz_results table is assumed:
-  // id serial/bigint/uuid
-  // created_at timestamptz default now()
-  // user_id uuid (nullable)
-  // first_pick text
-  // top_summary text
-  // answers jsonb
-  const { error: insErr } = await supa
-    .from("quiz_results")
-    .insert([{
-      user_id: userId,
-      first_pick: firstPickFromTop3(top3),
-      top_summary: summaryFromTop3(top3),
-      answers: answers || {}
-    }]);
+  // 2. insert quiz result linked to that same user.id
+  const { error: insErr } = await supa.from("results").insert({
+    user_id: user.id,
+    answers: answers || {},
+    top3: Array.isArray(top3) ? top3 : []
+  });
 
   if (insErr) {
-    console.error("[profileUpsert] quiz_results insert error:", insErr);
-    return json(500, {
-      error: "quiz_insert_failed",
-      detail: insErr.message
+    console.error("results insert error", insErr);
+    return jsonResponse(500, {
+      error: "results_insert_failed",
+      detail: insErr.message || String(insErr)
     });
   }
 
-  return json(200, { ok: true });
-});
+  return jsonResponse(200, { ok: true });
+};
