@@ -22,22 +22,24 @@ function send(statusCode, bodyObj, origin) {
 }
 
 /**
- * Request body from the dashboard:
+ * Frontend sends:
  * {
  *   lastDays: number,
  *   type: "user" | "guest" | null
  * }
  *
- * We return:
+ * We respond:
  * {
  *   total: number,
  *   new: number
  * }
+ *
+ * We compute stats from Supabase Auth users.
  */
 export async function handler(event) {
   const origin = event.headers?.origin || "*";
 
-  // Handle browser preflight
+  // Preflight
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 200,
@@ -50,21 +52,22 @@ export async function handler(event) {
     return send(405, { error: "method_not_allowed" }, origin);
   }
 
-  // ---------- AUTH ----------
+  // ---- AUTH CHECK ----
   const { token, user } = await getUserFromAuth(event);
   if (!token || !user) {
     return send(401, { error: "unauthorized" }, origin);
   }
 
-  // ---------- INPUT ----------
+  // ---- INPUT ----
   const body = parseJSON(event.body);
   const lastDays = Number(body.lastDays) || 7;
-  const typeReq  = body.type === "guest" ? "guest"
-                 : body.type === "user" ? "user"
-                 : null;
+  const typeReq  = body.type === "guest"
+    ? "guest"
+    : body.type === "user"
+    ? "user"
+    : null;
 
-  // If they're specifically asking for guests, right now we don't have
-  // a guest table wired in this safe version. Return 0/0 instead of 403.
+  // If asking for guests, we don't have guest storage wired yet.
   if (typeReq === "guest") {
     return send(
       200,
@@ -73,37 +76,40 @@ export async function handler(event) {
     );
   }
 
-  // ---------- DB ----------
+  // ---- LOAD USERS (BIG PAGE JUST TO COUNT) ----
+  // We'll just pull up to 1000 accounts. That's more than enough right now.
   const supa = getAdminClient();
+  const { data: listData, error: listErr } = await supa.auth.admin.listUsers({
+    page: 1,
+    perPage: 1000,
+  });
 
-  // Pull all profiles' created_at so we can count
-  const { data: rows, error } = await supa
-    .from("profiles")
-    .select("created_at");
-
-  if (error) {
-    console.error("adminStatsCORS db_failed:", error);
+  if (listErr) {
+    console.error("adminStatsCORS listUsers error:", listErr);
     return send(
       500,
-      {
-        error: "db_stats_failed",
-        detail: error.message || String(error),
-      },
+      { error: "auth_list_failed", detail: listErr.message || String(listErr) },
       origin
     );
   }
 
-  const now = Date.now();
-  const cutoffMs = now - lastDays * 24 * 60 * 60 * 1000;
+  const usersArr = listData?.users || [];
+  const nowMs = Date.now();
+  const cutoffMs = nowMs - lastDays * 24 * 60 * 60 * 1000;
 
   let totalCount = 0;
-  let newCount   = 0;
+  let newCount = 0;
 
-  for (const r of rows || []) {
+  for (const u of usersArr) {
     totalCount += 1;
-    const ts = Date.parse(r.created_at);
-    if (!Number.isNaN(ts) && ts >= cutoffMs) {
-      newCount += 1;
+
+    // pick a timestamp we can compare
+    const tsStr = u.created_at || u.last_sign_in_at || null;
+    if (tsStr) {
+      const ts = Date.parse(tsStr);
+      if (!Number.isNaN(ts) && ts >= cutoffMs) {
+        newCount += 1;
+      }
     }
   }
 
@@ -111,7 +117,7 @@ export async function handler(event) {
     200,
     {
       total: totalCount,
-      new: newCount
+      new: newCount,
     },
     origin
   );
