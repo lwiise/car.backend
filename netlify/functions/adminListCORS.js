@@ -1,154 +1,159 @@
 // netlify/functions/adminListCORS.js
-import cors, { json } from "./cors.js";
+import cors from "./cors.js";
 import {
   getAdminClient,
-  parseJSON,
   getUserFromAuth,
-  isAllowedAdmin
-} from "./_supabase.js";
+  ADMIN_EMAILS,
+  parseJSON
+} from "./_supabaseAdmin.js";
 
-// choose the top summary safely no matter how it's named
-function grabSummary(row) {
-  return (
-    row.top_summary ??
-    row.top3 ??
-    row.top_3 ??
-    row.summary ??
-    ""
-  );
-}
-
-// turn DB rows into what the frontend expects
-function shapeRow(resultRow, profileMap) {
-  const {
-    id,
-    created_at,
-    user_id,
-    first_pick
-  } = resultRow || {};
-
-  const prof = user_id ? profileMap[user_id] : null;
-
-  const finalEmail = prof?.email || "—";
-  const finalName  = prof?.name || prof?.nickname || "—";
-
-  return {
-    id,
-    created_at,
-    email: finalEmail,
-    name: finalName,
-    first_pick: first_pick || "—",
-    top_summary: grabSummary(resultRow) || "—",
-    type: user_id ? "User" : "Guest"
-  };
-}
-
-export const handler = cors(async (event) => {
-  if (event.httpMethod !== "POST") {
-    return json(405, { error: "method_not_allowed" });
-  }
-
-  // 1. auth / admin gate
+export default cors(async (event) => {
+  // --- auth check ---
   const { user } = await getUserFromAuth(event);
-  if (!isAllowedAdmin(user)) {
-    return json(403, { error: "forbidden" });
+  if (!user || !ADMIN_EMAILS.includes(user.email)) {
+    return {
+      statusCode: 403,
+      body: JSON.stringify({ error: "forbidden" })
+    };
   }
 
-  // 2. read filters from body
-  const {
-    page = 1,
-    pageSize = 20,
-    search = "",
-    type = "all",        // "all" | "user" | "guest"
-    resultsOnly = true   // kept for compatibility
-  } = parseJSON(event.body);
+  // --- read request body from frontend ---
+  const body = parseJSON(event.body);
+  const page       = Number(body.page)      || 1;
+  const pageSize   = Number(body.pageSize)  || 20;
+  const searchTerm = (body.search || "").trim().toLowerCase();
+  const typeFilter = body.type || null; // "user" | "guest" | null
+  // body.resultsOnly is ignored on purpose now
 
   const supa = getAdminClient();
 
-  // pagination calc
-  const from = (page - 1) * pageSize;
-  const to   = from + pageSize - 1;
+  // --- pull latest quiz results from DB ---
+  // We just grab newest quiz_results rows. We don't assume any columns except:
+  //   email, created_at, top3 (array of cars) or results (fallback), answers
+  const start = (page - 1) * pageSize;
+  const end   = start + pageSize - 1;
 
-  const wantsSearch = (search || "").trim().length > 0;
-  const MAX_FETCH   = 1000;
-  const rangeFrom   = wantsSearch ? 0 : from;
-  const rangeTo     = wantsSearch ? (MAX_FETCH - 1) : to;
-
-  // base query:
-  // NOTE: select("*") so we don't break on unknown columns
-  let listReq = supa
+  const { data: quizRows, error: quizErr } = await supa
     .from("quiz_results")
     .select("*")
     .order("created_at", { ascending: false })
-    .range(rangeFrom, rangeTo);
+    .range(start, end);
 
-  if (type === "guest") {
-    listReq = listReq.is("user_id", null);
-  } else if (type === "user") {
-    listReq = listReq.not("user_id", "is", null);
-  }
-  // "all" → no filter
-
-  const { data: resultRows, error: listErr } = await listReq;
-  if (listErr) {
-    console.error("[adminListCORS] listErr:", listErr);
-    return json(500, {
-      error: "db_list_failed",
-      detail: listErr.message
-    });
+  if (quizErr) {
+    console.error("quiz_results query failed:", quizErr);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({
+        error: "db_list_failed",
+        detail: quizErr.message || quizErr
+      })
+    };
   }
 
-  // build map user_id -> profile row
-  const allUserIds = Array.from(
-    new Set(
-      resultRows
-        .map(r => r.user_id)
-        .filter(Boolean)
-    )
-  );
+  // collect distinct emails
+  const emails = [...new Set(
+    (quizRows || [])
+      .map(r => r.email)
+      .filter(Boolean)
+  )];
 
-  let profileMap = {};
-  if (allUserIds.length > 0) {
+  // fetch matching profiles for those emails
+  let profilesByEmail = {};
+  if (emails.length) {
     const { data: profRows, error: profErr } = await supa
       .from("profiles")
-      .select("id,email,name,nickname")
-      .in("id", allUserIds);
+      .select("*")
+      .in("email", emails);
 
-    if (!profErr && Array.isArray(profRows)) {
-      profileMap = Object.fromEntries(
-        profRows.map(p => [p.id, p])
+    if (profErr) {
+      console.warn("profiles query error:", profErr);
+    } else if (Array.isArray(profRows)) {
+      profilesByEmail = Object.fromEntries(
+        profRows.map(p => [p.email, p])
       );
-    } else if (profErr) {
-      console.warn("[adminListCORS] profErr:", profErr);
     }
   }
 
-  // shape for frontend
-  let shaped = resultRows.map(r => shapeRow(r, profileMap));
+  // build response rows for the table
+  // we will also dedupe by email so you only see the newest row per person
+  const seenEmails = new Set();
+  const items = [];
 
-  // simple in-memory search
-  if (wantsSearch) {
-    const q = search.trim().toLowerCase();
-    shaped = shaped.filter(row => {
-      const hay =
-        (row.name || "") + " " +
-        (row.email || "") + " " +
-        (row.first_pick || "") + " " +
-        (row.top_summary || "");
-      return hay.toLowerCase().includes(q);
+  for (const row of quizRows) {
+    const email = row.email || "";
+    if (!email) continue; // no email? skip row
+
+    if (seenEmails.has(email)) {
+      // already pushed a newer row for this email
+      continue;
+    }
+    seenEmails.add(email);
+
+    const profile = profilesByEmail[email] || null;
+
+    // figure out top-3 car picks
+    // in some DBs you called it "top3", in older drafts maybe "results"
+    const top3raw = Array.isArray(row.top3)
+      ? row.top3
+      : (Array.isArray(row.results) ? row.results : []);
+
+    const firstPickObj = top3raw && top3raw[0] ? top3raw[0] : null;
+    const first_pick = firstPickObj
+      ? `${firstPickObj.brand || ""} ${firstPickObj.model || ""}`.trim()
+      : "";
+
+    const top_summary = top3raw && top3raw.length
+      ? top3raw
+          .map(c =>
+            `${c.brand || ""} ${c.model || ""}`.trim()
+          )
+          .filter(Boolean)
+          .join(" • ")
+      : "";
+
+    // classify: User if we have a profile, Guest if not
+    const kind = profile ? "User" : "Guest";
+
+    // we respect filter "user" / "guest"
+    if (typeFilter === "user"  && kind !== "User")  continue;
+    if (typeFilter === "guest" && kind !== "Guest") continue;
+
+    items.push({
+      id: row.id,
+      created_at: row.created_at,
+      email,
+      name: profile?.name || profile?.nickname || "",
+      first_pick,
+      top_summary,
+      top3: top3raw || [],
+      type: kind
     });
   }
 
-  const paged = wantsSearch
-    ? shaped.slice(from, from + pageSize)
-    : shaped;
+  // basic search filter (min 2 chars on frontend, but we'll be safe anyway)
+  if (searchTerm && searchTerm.length >= 2) {
+    const term = searchTerm;
+    const filtered = items.filter(it => {
+      const hay =
+        `${it.email} ${it.name} ${it.first_pick} ${it.top_summary}`
+          .toLowerCase();
+      return hay.includes(term);
+    });
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        items: filtered,
+        hasMore: quizRows.length === pageSize
+      })
+    };
+  }
 
-  const hasMore = wantsSearch
-    ? shaped.length > (from + pageSize)
-    : (resultRows.length === pageSize);
-
-  return json(200, {
-    items: paged,
-    hasMore
-  });
+  // normal return
+  return {
+    statusCode: 200,
+    body: JSON.stringify({
+      items,
+      hasMore: quizRows.length === pageSize
+    })
+  };
 });
