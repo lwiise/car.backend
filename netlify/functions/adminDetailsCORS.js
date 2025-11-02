@@ -1,159 +1,114 @@
 // netlify/functions/adminDetailsCORS.js
-import cors, { json } from "./cors.js";
 import {
   getAdminClient,
-  parseJSON,
-  getUserFromAuth,
-  isAllowedAdmin
-} from "./_supabase.js";
+  parseBody,
+  getRequester,
+  ADMIN_EMAILS,
+  jsonResponse,
+  forbidden,
+  handleOptions,
+} from "./_supabaseAdmin.js";
 
-function grabSummary(row) {
-  return (
-    row.top_summary ??
-    row.top3 ??
-    row.top_3 ??
-    row.summary ??
-    ""
-  );
-}
-
-// Build the "picks" section for the modal
-function buildPicks(row) {
-  const primary = row.first_pick || "—";
-  const blurb   = grabSummary(row) || "";
-  return [{
-    brand: primary,  // we don't have clean brand/model split, so we stuff in brand
-    model: "",
-    reason: blurb
-  }];
-}
-
-export const handler = cors(async (event) => {
-  if (event.httpMethod !== "POST") {
-    return json(405, { error: "method_not_allowed" });
+export const handler = async (event) => {
+  if (event.httpMethod === "OPTIONS") {
+    return handleOptions();
   }
 
-  // admin check
-  const { user } = await getUserFromAuth(event);
-  if (!isAllowedAdmin(user)) {
-    return json(403, { error: "forbidden" });
+  const { user } = await getRequester(event);
+  const adminEmail = (user?.email || "").toLowerCase();
+  if (!user || !ADMIN_EMAILS.map(e => e.toLowerCase()).includes(adminEmail)) {
+    return forbidden();
   }
 
-  const { id } = parseJSON(event.body) || {};
-  if (!id) {
-    return json(400, { error: "missing_id" });
-  }
+  const { email = "", type = "user" } = parseBody(event.body || "{}");
 
   const supa = getAdminClient();
 
-  // 1. pull the quiz_results row
-  const { data: baseRows, error: baseErr } = await supa
-    .from("quiz_results")
-    .select("*")
-    .eq("id", id)
-    .limit(1);
+  // 1. pull profile by email
+  const { data: prof, error: profErr } = await supa
+    .from("profiles")
+    .select(
+      "id,email,name,nickname,dob,gender,country,state,updated_at"
+    )
+    .eq("email", email)
+    .maybeSingle();
 
-  if (baseErr) {
-    console.error("[adminDetailsCORS] baseErr:", baseErr);
-    return json(500, {
-      error: "db_failed",
-      detail: baseErr.message
-    });
+  if (profErr) {
+    console.warn("profile fetch err:", profErr);
   }
 
-  const main = baseRows?.[0];
-  if (!main) {
-    return json(404, { error: "not_found", detail: "row not found" });
-  }
+  // default safe placeholders
+  let latestResult = null;
+  let authUserRow  = null;
 
-  // 2. If user_id exists, fetch profile + count all their results
-  if (main.user_id) {
-    const { data: profRows, error: profErr } = await supa
-      .from("profiles")
-      .select(
-        "id,email,name,nickname,gender,dob,country,state,created_at,updated_at"
-      )
-      .eq("id", main.user_id)
-      .limit(1);
-
-    if (profErr) {
-      console.error("[adminDetailsCORS] profErr:", profErr);
-      return json(500, {
-        error: "db_profile_failed",
-        detail: profErr.message
-      });
-    }
-
-    const profile = profRows?.[0] || null;
-    if (!profile) {
-      return json(404, { error: "not_found", detail: "profile not found" });
-    }
-
-    // count all quiz_results for this user_id
-    const { data: resRows, error: resErr } = await supa
-      .from("quiz_results")
-      .select("id")
-      .eq("user_id", profile.id);
+  if (prof && prof.id) {
+    // 2. latest quiz attempt for this user
+    const { data: resRow, error: resErr } = await supa
+      .from("results")
+      .select("id,user_id,created_at,answers,top3")
+      .eq("user_id", prof.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (resErr) {
-      console.error("[adminDetailsCORS] resErr:", resErr);
-      return json(500, {
-        error: "db_results_failed",
-        detail: resErr.message
-      });
+      console.warn("results fetch err:", resErr);
+    } else {
+      latestResult = resRow || null;
     }
 
-    const picks = buildPicks(main);
+    // 3. basic auth.users info (created_at)
+    const { data: authRow, error: authErr } = await supa
+      .from("auth.users")
+      .select("id,email,created_at")
+      .eq("id", prof.id)
+      .maybeSingle();
 
-    const meta = {
-      type: "User",
-      top3_count: resRows?.length ?? 0,
-      user_id: profile.id,
-      created_at: main.created_at
-    };
-
-    return json(200, {
-      profile: {
-        email: profile.email || "—",
-        name: profile.name || "—",
-        nickname: profile.nickname || "—",
-        gender: profile.gender || "—",
-        dob: profile.dob || null,
-        country: profile.country || "—",
-        state: profile.state || "—",
-        created_at: profile.created_at || main.created_at,
-        updated_at: profile.updated_at || profile.created_at,
-        user_id: profile.id
-      },
-      meta,
-      picks,
-      answers: main.answers || {}
-    });
+    if (authErr) {
+      console.warn("auth.users fetch err:", authErr);
+    } else {
+      authUserRow = authRow || null;
+    }
   }
 
-  // 3. Guest path
-  const picks = buildPicks(main);
+  // build "picks" array from latestResult.top3
+  let picks = [];
+  if (latestResult && Array.isArray(latestResult.top3)) {
+    picks = latestResult.top3.map((p) => ({
+      brand: p.brand || "",
+      model: p.model || "",
+      reason: p.reason || "",
+    }));
+  }
 
-  return json(200, {
-    profile: {
-      email: "—",
-      name: "—",
-      nickname: null,
-      gender: null,
-      dob: null,
-      country: null,
-      state: null,
-      created_at: main.created_at,
-      updated_at: main.created_at,
-      user_id: null
-    },
-    meta: {
-      type: "Guest",
-      top3_count: 1,
-      user_id: null,
-      created_at: main.created_at
-    },
+  // quiz answers
+  const answers = latestResult?.answers || {};
+
+  // profile block for the modal
+  const profileOut = {
+    email:     prof?.email || email || "—",
+    name:      prof?.name || "—",
+    nickname:  prof?.nickname || "—",
+    gender:    prof?.gender || "—",
+    dob:       prof?.dob || null,
+    country:   prof?.country || "—",
+    state:     prof?.state || "—",
+    created_at: authUserRow?.created_at || latestResult?.created_at || null,
+    updated_at: prof?.updated_at || null,
+  };
+
+  // meta block
+  const metaOut = {
+    type:        prof ? "User" : (type === "guest" ? "Guest" : "User"),
+    top3_count:  Array.isArray(picks) ? picks.length : 0,
+    user_id:     prof?.id || null,
+    created_at:  latestResult?.created_at || authUserRow?.created_at || null,
+  };
+
+  return jsonResponse(200, {
+    profile: profileOut,
+    meta: metaOut,
     picks,
-    answers: main.answers || {}
+    answers,
   });
-});
+};
