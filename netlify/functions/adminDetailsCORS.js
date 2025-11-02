@@ -1,30 +1,36 @@
 // netlify/functions/adminDetailsCORS.js
 import {
   getAdminClient,
-  parseBody,
-  getRequester,
-  ADMIN_EMAILS,
+  parseJSON,
+  requireAdmin,
   jsonResponse,
-  forbidden,
-  handleOptions,
+  preflightResponse
 } from "./_supabaseAdmin.js";
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return handleOptions();
+    return preflightResponse();
   }
 
-  const { user } = await getRequester(event);
-  const adminEmail = (user?.email || "").toLowerCase();
-  if (!user || !ADMIN_EMAILS.map(e => e.toLowerCase()).includes(adminEmail)) {
-    return forbidden();
+  const auth = await requireAdmin(event);
+  if (!auth.ok) {
+    return jsonResponse(auth.statusCode, auth.payload);
   }
 
-  const { email = "", type = "user" } = parseBody(event.body || "{}");
+  const body = parseJSON(event.body);
+  const email = (body.email || "").trim();
+  const type = (body.type || "user").toLowerCase();
+
+  if (!email) {
+    return jsonResponse(400, {
+      error: "bad_request",
+      detail: "email required"
+    });
+  }
 
   const supa = getAdminClient();
 
-  // 1. pull profile by email
+  // 1. get profile
   const { data: prof, error: profErr } = await supa
     .from("profiles")
     .select(
@@ -34,81 +40,77 @@ export const handler = async (event) => {
     .maybeSingle();
 
   if (profErr) {
-    console.warn("profile fetch err:", profErr);
+    console.error("profile fetch error", profErr);
+    return jsonResponse(500, {
+      error: "db_detail_failed",
+      detail: profErr.message || String(profErr)
+    });
   }
 
-  // default safe placeholders
-  let latestResult = null;
-  let authUserRow  = null;
-
-  if (prof && prof.id) {
-    // 2. latest quiz attempt for this user
-    const { data: resRow, error: resErr } = await supa
-      .from("results")
-      .select("id,user_id,created_at,answers,top3")
-      .eq("user_id", prof.id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (resErr) {
-      console.warn("results fetch err:", resErr);
-    } else {
-      latestResult = resRow || null;
-    }
-
-    // 3. basic auth.users info (created_at)
-    const { data: authRow, error: authErr } = await supa
-      .from("auth.users")
-      .select("id,email,created_at")
-      .eq("id", prof.id)
-      .maybeSingle();
-
-    if (authErr) {
-      console.warn("auth.users fetch err:", authErr);
-    } else {
-      authUserRow = authRow || null;
-    }
+  if (!prof) {
+    return jsonResponse(404, {
+      error: "not_found",
+      detail: "profile not found"
+    });
   }
 
-  // build "picks" array from latestResult.top3
-  let picks = [];
-  if (latestResult && Array.isArray(latestResult.top3)) {
-    picks = latestResult.top3.map((p) => ({
-      brand: p.brand || "",
-      model: p.model || "",
-      reason: p.reason || "",
-    }));
+  // 2. latest result for that user
+  const { data: latestResArr, error: resErr } = await supa
+    .from("results")
+    .select("id,created_at,top3,answers")
+    .eq("user_id", prof.id)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (resErr) {
+    console.error("latest result error", resErr);
+    return jsonResponse(500, {
+      error: "db_detail_failed",
+      detail: resErr.message || String(resErr)
+    });
   }
 
-  // quiz answers
-  const answers = latestResult?.answers || {};
+  const latestRes =
+    latestResArr && latestResArr[0] ? latestResArr[0] : null;
 
-  // profile block for the modal
-  const profileOut = {
-    email:     prof?.email || email || "—",
-    name:      prof?.name || "—",
-    nickname:  prof?.nickname || "—",
-    gender:    prof?.gender || "—",
-    dob:       prof?.dob || null,
-    country:   prof?.country || "—",
-    state:     prof?.state || "—",
-    created_at: authUserRow?.created_at || latestResult?.created_at || null,
-    updated_at: prof?.updated_at || null,
+  // 3. how many total results this user has ever made
+  const { count: resCount, error: cntErr } = await supa
+    .from("results")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", prof.id);
+
+  if (cntErr) {
+    console.error("results count error", cntErr);
+  }
+
+  // shape the response exactly how your frontend expects it:
+  const outProfile = {
+    user_id: prof.id,
+    email: prof.email || "",
+    name: prof.name || "",
+    nickname: prof.nickname || "",
+    gender: prof.gender || "",
+    dob: prof.dob || null,
+    country: prof.country || "",
+    state: prof.state || "",
+    created_at: latestRes ? latestRes.created_at : null,
+    updated_at: prof.updated_at || null
   };
 
-  // meta block
-  const metaOut = {
-    type:        prof ? "User" : (type === "guest" ? "Guest" : "User"),
-    top3_count:  Array.isArray(picks) ? picks.length : 0,
-    user_id:     prof?.id || null,
-    created_at:  latestResult?.created_at || authUserRow?.created_at || null,
+  const meta = {
+    type: type === "guest" ? "Guest" : "User",
+    user_id: prof.id,
+    top3_count: Array.isArray(latestRes?.top3)
+      ? latestRes.top3.length
+      : 0,
+    results_count:
+      typeof resCount === "number" ? resCount : null
   };
 
   return jsonResponse(200, {
-    profile: profileOut,
-    meta: metaOut,
-    picks,
-    answers,
+    profile: outProfile,
+    meta,
+    picks: Array.isArray(latestRes?.top3) ? latestRes.top3 : [],
+    answers: latestRes?.answers || {}
   });
 };
