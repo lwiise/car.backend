@@ -1,66 +1,73 @@
 // netlify/functions/adminStatsCORS.js
 import {
   getAdminClient,
-  parseBody,
-  getRequester,
-  ADMIN_EMAILS,
+  parseJSON,
+  requireAdmin,
   jsonResponse,
-  forbidden,
-  handleOptions,
+  preflightResponse
 } from "./_supabaseAdmin.js";
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return handleOptions();
+    return preflightResponse();
   }
 
-  const { user } = await getRequester(event);
-  const adminEmail = (user?.email || "").toLowerCase();
-  if (!user || !ADMIN_EMAILS.map(e => e.toLowerCase()).includes(adminEmail)) {
-    return forbidden();
+  const auth = await requireAdmin(event);
+  if (!auth.ok) {
+    return jsonResponse(auth.statusCode, auth.payload);
   }
 
-  const {
-    lastDays = 7,  // number of days window for "new"
-    type = null,   // "user" | "guest" | null
-  } = parseBody(event.body);
+  const body = parseJSON(event.body);
+  const lastDays = Number(body.lastDays) || 7;
+  const type = (body.type || "user").toLowerCase();
 
   const supa = getAdminClient();
 
-  // build helper to count with optional filters
-  async function countSince(sinceIso = null) {
-    let q = supa
-      .from("results")
-      .select("*", { count: "exact", head: true }); // data won't return, just count
-
-    if (type === "user") {
-      q = q.not("user_id", "is", null);   // user_id IS NOT NULL
-    } else if (type === "guest") {
-      q = q.is("user_id", null);          // user_id IS NULL
-    }
-
-    if (sinceIso) {
-      q = q.gte("created_at", sinceIso);
-    }
-
-    const { count, error } = await q;
-    if (error) {
-      console.warn("stats count error:", error);
-      return 0;
-    }
-    return count || 0;
+  // Guests tab → we currently don't store anonymous guest rows,
+  // so just say 0.
+  if (type === "guest") {
+    return jsonResponse(200, { total: 0, new: 0 });
   }
 
-  // now = Date.now(), subtract lastDays days
-  const now = Date.now();
-  const ms = lastDays * 24 * 60 * 60 * 1000;
-  const sinceIso = new Date(now - ms).toISOString();
+  // total = #profiles
+  const { count: totalCount, error: cntErr } = await supa
+    .from("profiles")
+    .select("id", { count: "exact", head: true });
 
-  const totalCount = await countSince(null);
-  const newCount   = await countSince(sinceIso);
+  if (cntErr) {
+    console.error("profiles count error", cntErr);
+    return jsonResponse(500, {
+      error: "db_stats_failed",
+      detail: cntErr.message || String(cntErr)
+    });
+  }
+
+  // new = distinct users who produced results in last X days
+  const cutoffIso = new Date(
+    Date.now() - lastDays * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  const { data: recentRows, error: recErr } = await supa
+    .from("results")
+    .select("user_id,created_at")
+    .not("user_id", "is", null)
+    .gte("created_at", cutoffIso);
+
+  if (recErr) {
+    console.error("recent results error", recErr);
+    return jsonResponse(500, {
+      error: "db_stats_failed",
+      detail: recErr.message || String(recErr)
+    });
+  }
+
+  const uniqueNew = new Set();
+  for (const r of recentRows || []) {
+    if (r.user_id) uniqueNew.add(r.user_id);
+  }
 
   return jsonResponse(200, {
-    total: totalCount,
-    new: newCount,
+    total: typeof totalCount === "number" ? totalCount : 0,
+    new: uniqueNew.size
   });
 };
