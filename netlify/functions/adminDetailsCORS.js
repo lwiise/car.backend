@@ -7,6 +7,12 @@ import {
   preflightResponse
 } from "./_supabaseAdmin.js";
 
+function parseGuestId(str) {
+  // "guest-42" -> 42
+  const m = /^guest-(\d+)$/.exec(str || "");
+  return m ? Number(m[1]) : null;
+}
+
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
     return preflightResponse();
@@ -17,9 +23,9 @@ export const handler = async (event) => {
     return jsonResponse(auth.statusCode, auth.payload);
   }
 
-  const body = parseJSON(event.body);
+  const body  = parseJSON(event.body);
   const email = (body.email || "").trim();
-  const type = (body.type || "user").toLowerCase();
+  const type  = (body.type || "user").toLowerCase();
 
   if (!email) {
     return jsonResponse(400, {
@@ -30,7 +36,61 @@ export const handler = async (event) => {
 
   const supa = getAdminClient();
 
-  // 1. get profile
+  // ---------- GUEST branch ----------
+  if (type === "guest") {
+    // frontend will send email like "guest-123"
+    const guestId = parseGuestId(email);
+    if (!guestId) {
+      return jsonResponse(400, {
+        error: "bad_request",
+        detail: "invalid guest id"
+      });
+    }
+
+    const { data: gRow, error: gErr } = await supa
+      .from("guest_results")
+      .select("id,created_at,top3,answers")
+      .eq("id", guestId)
+      .single();
+
+    if (gErr) {
+      console.error("guest_details error", gErr);
+      return jsonResponse(500, {
+        error: "db_detail_failed",
+        detail: gErr.message || String(gErr)
+      });
+    }
+
+    const profile = {
+      user_id: `guest-${gRow.id}`,
+      email:   `guest-${gRow.id}`,
+      name:    "Guest",
+      nickname:"",
+      gender:  "",
+      dob:     null,
+      country: "",
+      state:   "",
+      created_at: gRow.created_at,
+      updated_at: gRow.created_at
+    };
+
+    const meta = {
+      type: "Guest",
+      user_id: `guest-${gRow.id}`,
+      top3_count: Array.isArray(gRow.top3) ? gRow.top3.length : 0,
+      results_count: 1
+    };
+
+    return jsonResponse(200, {
+      profile,
+      meta,
+      picks: Array.isArray(gRow.top3) ? gRow.top3 : [],
+      answers: gRow.answers || {}
+    });
+  }
+
+  // ---------- USER branch ----------
+  // find profile by email
   const { data: prof, error: profErr } = await supa
     .from("profiles")
     .select(
@@ -54,7 +114,7 @@ export const handler = async (event) => {
     });
   }
 
-  // 2. latest result for that user
+  // latest result for this user
   const { data: latestResArr, error: resErr } = await supa
     .from("results")
     .select("id,created_at,top3,answers")
@@ -70,10 +130,9 @@ export const handler = async (event) => {
     });
   }
 
-  const latestRes =
-    latestResArr && latestResArr[0] ? latestResArr[0] : null;
+  const latestRes = latestResArr?.[0] || null;
 
-  // 3. how many total results this user has ever made
+  // how many total results
   const { count: resCount, error: cntErr } = await supa
     .from("results")
     .select("id", { count: "exact", head: true })
@@ -83,8 +142,7 @@ export const handler = async (event) => {
     console.error("results count error", cntErr);
   }
 
-  // shape the response exactly how your frontend expects it:
-  const outProfile = {
+  const profileOut = {
     user_id: prof.id,
     email: prof.email || "",
     name: prof.name || "",
@@ -98,7 +156,7 @@ export const handler = async (event) => {
   };
 
   const meta = {
-    type: type === "guest" ? "Guest" : "User",
+    type: "User",
     user_id: prof.id,
     top3_count: Array.isArray(latestRes?.top3)
       ? latestRes.top3.length
@@ -108,7 +166,7 @@ export const handler = async (event) => {
   };
 
   return jsonResponse(200, {
-    profile: outProfile,
+    profile: profileOut,
     meta,
     picks: Array.isArray(latestRes?.top3) ? latestRes.top3 : [],
     answers: latestRes?.answers || {}
