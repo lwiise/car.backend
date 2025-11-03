@@ -2,7 +2,7 @@
 
 const HEADERS = {
   "Content-Type": "application/json",
-  "Access-Control-Allow-Origin": "*", // allow Webflow or any origin
+  "Access-Control-Allow-Origin": "*", // you can replace * with your domain later
   "Access-Control-Allow-Headers": "Content-Type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
@@ -10,9 +10,14 @@ const HEADERS = {
 exports.handler = async (event) => {
   // CORS preflight
   if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: HEADERS, body: "" };
+    return {
+      statusCode: 200,
+      headers: HEADERS,
+      body: "",
+    };
   }
 
+  // Only allow POST
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
@@ -47,7 +52,7 @@ If you don't know exact models/prices, stay general and do NOT invent fake model
       { role: "user", content: message },
     ];
 
-    // 🔑 Same API key you already use for your quiz
+    // Call OpenAI (same key you already use for the quiz)
     const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
