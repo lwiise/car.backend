@@ -1,26 +1,16 @@
 // netlify/functions/car-chat.js
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY, // same key you already use for the quiz
-});
 
 const HEADERS = {
   "Content-Type": "application/json",
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": "*", // allow Webflow or any origin
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-export async function handler(event) {
+exports.handler = async (event) => {
+  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 200,
-      headers: {
-        ...HEADERS,
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-      },
-      body: "",
-    };
+    return { statusCode: 200, headers: HEADERS, body: "" };
   }
 
   if (event.httpMethod !== "POST") {
@@ -47,25 +37,46 @@ export async function handler(event) {
         role: "system",
         content: `
 You are a friendly car advisor chatbot on a dealership website.
-Ask about budget, main usage (city, family, long trips, off-road), fuel type,
-transmission, and brand preferences. Suggest 1–3 cars and explain briefly why
-each one fits. If you don't know exact models/prices, stay general and DO NOT
-invent fake models.
+Ask about budget, main usage (city, family, long trips, off-road),
+fuel type, transmission, and brand preferences.
+Suggest 1–3 cars and briefly explain why each fits.
+If you don't know exact models/prices, stay general and do NOT invent fake models.
         `.trim(),
       },
       ...history,
       { role: "user", content: message },
     ];
 
-    const response = await client.chat.completions.create({
-      model: "gpt-4o-mini", // ✅ same family you use in the quiz
-      messages,
-      temperature: 0.6,
+    // 🔑 Same API key you already use for your quiz
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages,
+        temperature: 0.6,
+      }),
     });
 
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      return {
+        statusCode: 500,
+        headers: HEADERS,
+        body: JSON.stringify({
+          error: "OpenAI error",
+          details: errText,
+        }),
+      };
+    }
+
+    const data = await openaiRes.json();
     const reply =
-      response.choices?.[0]?.message?.content ||
-      "Sorry, something went wrong on the AI side.";
+      data.choices?.[0]?.message?.content ||
+      "Sorry, I could not generate an answer.";
 
     return {
       statusCode: 200,
@@ -74,7 +85,6 @@ invent fake models.
     };
   } catch (err) {
     console.error("car-chat error:", err);
-
     return {
       statusCode: 500,
       headers: HEADERS,
@@ -84,4 +94,4 @@ invent fake models.
       }),
     };
   }
-}
+};
