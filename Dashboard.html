@@ -1,0 +1,780 @@
+<!-- =====================  USER DASHBOARD (FINAL SYNCED, FIXED MODAL)  ===================== -->
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<!-- Supabase -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  // ---- Supabase client ----
+  const SUPABASE_URL  = "https://zrlfkdxpqkhfusjktrey.supabase.co";
+  const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpybGZrZHhwcWtoZnVzamt0cmV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk4NDc1MzYsImV4cCI6MjA3NTQyMzUzNn0.FG3eMKO7KRJ_GM4XXo5DEIDlWU7j9tjMJRJwpotNd6Y";
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+  // Netlify base + CORS-wrapped endpoints
+  const NETLIFY_BASE     = "https://carbackendd.netlify.app/.netlify/functions";
+  const RESULTS_LIST_URL = `${NETLIFY_BASE}/resultsListCORS`;
+</script>
+
+<style>
+  :root{
+    --bg1:#0b0c10;--bg2:#0f1117;--ink:#e5e7eb;--muted:#b6bdc7;
+    --gold:#d4af37;--gold-2:#b88a1e;
+  }
+  html,body{
+    background:radial-gradient(1200px 800px at 20% -10%,#151821 0%,#0b0c10 45%,#050608 100%),
+               linear-gradient(180deg,var(--bg1),var(--bg2));
+    color:var(--ink);
+    font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    margin:0
+  }
+  html.modal-open,body.modal-open{overflow:hidden}
+
+  .wrap{max-width:1200px;margin:36px auto 80px;padding:0 18px}
+  .hero{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+  .brand{display:flex;align-items:center;gap:14px}
+  .badge-luxe{
+    width:36px;height:36px;border-radius:50%;
+    background:linear-gradient(135deg,var(--gold),var(--gold-2));
+    box-shadow:0 8px 22px rgba(212,175,55,.35)
+  }
+  .ttl{
+    margin:0;
+    font-family:"Cormorant Garamond",serif;
+    font-weight:700;letter-spacing:.3px;
+    font-size:40px;line-height:1.1
+  }
+  .sub{margin:6px 0 0;color:var(--muted);font-size:14px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap}
+  .btn{
+    appearance:none;border:none;cursor:pointer;
+    border-radius:14px;padding:10px 14px;
+    font-weight:700;letter-spacing:.02em;
+    transition:transform .06s,box-shadow .25s,background .25s,opacity .2s;
+    font-size:1em;text-decoration:none;
+    background:rgba(255,255,255,.08);color:var(--ink)
+  }
+  .btn-ghost{border:1px solid rgba(255,255,255,.14)}
+  .btn-ghost:hover{background:rgba(255,255,255,.12)}
+  .btn-primary{
+    background:linear-gradient(135deg,var(--gold),var(--gold-2));
+    color:#0e0f12;
+    box-shadow:0 12px 36px rgba(212,175,55,.32)
+  }
+  .btn-primary:hover{box-shadow:0 16px 44px rgba(212,175,55,.42)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+
+  .panel{
+    padding:16px;border-radius:16px;
+    background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.04));
+    border:1px solid rgba(255,255,255,.18);
+    box-shadow:0 24px 60px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.15);
+    margin-bottom:16px
+  }
+  .section-ttl{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:12px;margin:22px 0 10px
+  }
+  .section-ttl h2{
+    margin:0;
+    font-family:"Cormorant Garamond",serif;
+    font-weight:700;
+    font-size:28px
+  }
+  .grid{
+    display:grid;gap:18px;
+    grid-template-columns:repeat(3,minmax(0,1fr))
+  }
+  @media (max-width:1024px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:640px){.grid{grid-template-columns:1fr}}
+
+  .card{
+    position:relative;overflow:hidden;border-radius:18px;
+    background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.03)),rgba(22,22,25,.55);
+    border:1px solid rgba(255,255,255,.18);
+    box-shadow:0 22px 60px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.12)
+  }
+  .card:before{
+    content:"";position:absolute;inset:auto -40% 60% -40%;
+    height:140%;
+    background:radial-gradient(600px 300px at 50% 0%,rgba(212,175,55,.16),transparent 60%);
+    filter:blur(20px);pointer-events:none
+  }
+  .badge{
+    position:absolute;top:12px;left:12px;z-index:2;
+    padding:6px 10px;border-radius:999px;
+    font-size:12px;font-weight:700;color:#0f1117;
+    background:linear-gradient(135deg,var(--gold),var(--gold-2));
+    box-shadow:0 10px 26px rgba(212,175,55,.35)
+  }
+  .card-img{
+    width:100%;height:190px;object-fit:cover;
+    display:block;background:#0f1117;opacity:.95
+  }
+  .card-body{padding:16px}
+  .card h3{
+    margin:0 0 6px;
+    font-family:"Cormorant Garamond",serif;
+    font-size:24px;font-weight:700;color:#fff
+  }
+  .card p{margin:0;color:#d0d3d9;font-size:14px}
+
+  .timeline{position:relative;padding-left:22px}
+  .timeline:before{
+    content:"";position:absolute;left:8px;top:0;bottom:0;width:2px;
+    background:linear-gradient(180deg,rgba(212,175,55,.4),transparent)
+  }
+  .t-item{position:relative;margin:12px 0 0 0;padding-left:18px}
+  .t-item:before{
+    content:"";position:absolute;left:-2px;top:6px;width:10px;height:10px;border-radius:50%;
+    background:linear-gradient(135deg,var(--gold),var(--gold-2));
+    box-shadow:0 0 0 4px rgba(212,175,55,.18)
+  }
+  .t-row{
+    display:flex;gap:12px;align-items:center;justify-content:space-between;
+    flex-wrap:wrap;padding:10px 12px;border-radius:12px;
+    background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12)
+  }
+  .t-date{color:var(--muted);font-size:13px}
+  .t-summary{color:#fff;font-weight:700;font-size:14px}
+  .t-actions{display:flex;gap:8px}
+
+  .center{
+    display:flex;align-items:center;gap:12px;
+    min-height:30vh;padding:24px 18px;
+    font-size:28px;color:var(--ink)
+  }
+  .loader{
+    width:18px;height:18px;border-radius:50%;
+    border:3px solid rgba(255,255,255,.25);
+    border-top-color:var(--gold);
+    animation:spin .9s linear infinite
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* make "Retake quiz" / "Log out" / "View" smaller */
+  .actions .btn,#history-list .t-actions .btn{
+    font-size:.6em;padding:8px 12px;border-radius:12px
+  }
+</style>
+
+<div class="wrap" id="dash-root">
+  <div class="center"><span class="loader"></span> Preparing your luxury garage…</div>
+</div>
+
+<!-- Watchdog in case auth/network hangs -->
+<script>
+(function(){
+  window.__boot_done=false;
+  setTimeout(function(){
+    if(window.__boot_done) return;
+    const root=document.getElementById('dash-root');
+    if(!root) return;
+    root.innerHTML=`
+      <div class="panel">
+        <h2 style="margin:0 0 8px;font-family:'Cormorant Garamond',serif;">Something took too long</h2>
+        <p class="sub">Auth or network issue. Try reloading, sign in here, or go back to the quiz.</p>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <a class="btn btn-ghost" href="/quiz">Go to Quiz</a>
+          <button class="btn btn-primary" onclick="window.__inlineLogin && window.__inlineLogin()">Sign in with Google</button>
+          <button class="btn btn-ghost" onclick="location.reload()">Reload</button>
+        </div>
+      </div>`;
+  },8000);
+})();
+</script>
+
+<!-- SOLID, NON-TRANSPARENT HISTORY MODAL -->
+<div
+  id="history-overlay"
+  aria-hidden="true"
+  style="
+    position:fixed;
+    inset:0;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:0 16px;
+    z-index:2147483647;
+    background:rgba(0,0,0,0.8);
+    backdrop-filter:none;
+    -webkit-backdrop-filter:none;
+  "
+>
+  <div
+    id="history-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="hist-ttl"
+    style="
+      position:relative;
+      width:min(92vw,900px);
+      max-height:85vh;
+      overflow:auto;
+      border-radius:18px;
+      padding:24px 20px 20px;
+      background:#0f1117;
+      border:1px solid rgba(255,255,255,0.14);
+      box-shadow:0 30px 80px rgba(0,0,0,0.9);
+      color:#e5e7eb;
+      font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    "
+  >
+    <div
+      style="
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+        margin-bottom:12px;
+      "
+    >
+      <h3
+        id="hist-ttl"
+        style="
+          margin:0;
+          font-family:'Cormorant Garamond',serif;
+          font-size:26px;
+          line-height:1.2;
+          color:#fff;
+        "
+      >Result details</h3>
+
+      <button
+        id="hist-close"
+        aria-label="Close"
+        style="
+          width:36px;
+          height:36px;
+          border-radius:10px;
+          display:grid;
+          place-items:center;
+          cursor:pointer;
+          background:rgba(255,255,255,.08);
+          border:1px solid rgba(255,255,255,.16);
+          color:#fff;
+          font-size:16px;
+          line-height:1;
+        "
+      >✕</button>
+    </div>
+
+    <div id="hist-body" style="color:#d0d3d9; font-size:14px; line-height:1.5;"></div>
+  </div>
+</div>
+
+<script>
+(async function(){
+  const root         = document.getElementById('dash-root');
+  const overlay      = document.getElementById('history-overlay');
+  const closeBtn     = document.getElementById('hist-close');
+  const histBody     = document.getElementById('hist-body');
+
+  // ========= inline login =========
+  window.__inlineLogin = async function(){
+    try{
+      await sb.auth.signInWithOAuth({
+        provider:'google',
+        options:{ redirectTo: location.href }
+      });
+    }catch(e){ console.error(e); }
+  };
+
+  function fatal(msg){
+    root.innerHTML=`
+      <div class="panel">
+        <h2 style="margin:0 0 8px;font-family:'Cormorant Garamond',serif;">Something went wrong</h2>
+        <p class="sub">${msg}</p>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="window.__inlineLogin()">Sign in with Google</button>
+          <a class="btn btn-ghost" href="/quiz">Go to Quiz</a>
+          <button class="btn btn-ghost" onclick="location.reload()">Reload</button>
+        </div>
+      </div>`;
+    window.__boot_done=true;
+  }
+
+  // ========= session bootstrap =========
+  async function ensureSession(){
+    // handle OAuth hash
+    const hash=new URLSearchParams(location.hash.replace(/^#/,''));  
+    const qs=new URLSearchParams(location.search);
+    const at=hash.get('access_token')||qs.get('access_token');
+    const rt=hash.get('refresh_token')||qs.get('refresh_token');
+    if(at&&rt){
+      try{ await sb.auth.setSession({access_token:at,refresh_token:rt}); }catch{}
+      history.replaceState(null,'',location.pathname);
+    }
+
+    // try cached session
+    try{
+      const cached = sessionStorage.getItem('sbSession');
+      if(cached){
+        const s=JSON.parse(cached);
+        if(s?.access_token && s?.refresh_token){
+          await sb.auth.setSession({access_token:s.access_token,refresh_token:s.refresh_token});
+        }
+      }
+    }catch{}
+
+    // refresh
+    try{ await sb.auth.refreshSession(); }catch{}
+    const { data } = await sb.auth.getSession();
+    if (data?.session) {
+      sessionStorage.setItem('sbSession', JSON.stringify(data.session));
+      sessionStorage.setItem('sbUserId', data.session.user?.id || '');
+      sessionStorage.setItem('sbEmail',  data.session.user?.email || '');
+    }
+    return data?.session || null;
+  }
+
+  let session=null, user=null, token=null;
+  try{ session=await ensureSession(); }catch(e){ console.error(e); }
+
+  if(!session){
+    root.innerHTML=`
+      <div class="panel">
+        <div class="brand">
+          <div class="badge-luxe"></div>
+          <div>
+            <h1 class="ttl">Your Luxury Garage</h1>
+            <p class="sub">Sign in to see your results.</p>
+          </div>
+        </div>
+      </div>
+      <div class="panel" style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="window.__inlineLogin()">Sign in with Google</button>
+        <a class="btn btn-ghost" href="/quiz">Go to Quiz</a>
+      </div>`;
+    window.__boot_done=true;
+    return;
+  }
+
+  token=session.access_token;
+  user=session.user || {};
+  const uid   = user.id    || sessionStorage.getItem('sbUserId') || '';
+  const email = user.email || sessionStorage.getItem('sbEmail') || '';
+
+  // ========= helpers =========
+  function shortSummary(r){
+    const arr=Array.isArray(r.top3)?r.top3:[];
+    return arr.slice(0,3)
+      .map(c=>`${c.brand??''} ${c.model??''}`.trim())
+      .filter(Boolean)
+      .join(' • ')||'3 matches';
+  }
+
+  function renderTop3Cards(top3){
+    if(!Array.isArray(top3) || !top3.length){
+      return `<div class="panel">No results yet. <a href="/quiz" class="btn btn-primary" style="margin-left:6px;">Take the quiz</a></div>`;
+    }
+    return `
+      <div class="grid" id="latest-grid">
+        ${top3.slice(0,3).map((c,i)=>{
+          const title=`${c.brand??''} ${c.model??''}`.trim();
+          const img=c.image||'';
+          const reason=c.reason??'';
+          return `
+            <article class="card">
+              <span class="badge">#${i+1}</span>
+              ${
+                img
+                ? `<img class="card-img" src="${img}" alt="${title||'Car image'}">`
+                : `<div class="card-img" aria-hidden="true"></div>`
+              }
+              <div class="card-body">
+                <h3>${title||'Car'}</h3>
+                <p>${reason}</p>
+              </div>
+            </article>`;
+        }).join('')}
+      </div>`;
+  }
+
+  // ========= fetch history =========
+  let limit=10, offset=0;
+
+  async function fetchHistoryViaFn(extraOffset=0){
+    const u = new URL(RESULTS_LIST_URL);
+    u.searchParams.set('limit', String(limit));
+    u.searchParams.set('offset', String(extraOffset));
+    if (uid)   u.searchParams.set('uid', uid);
+    if (email) u.searchParams.set('email', email);
+
+    const res = await fetch(u.toString(), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-User-Id": uid,
+        "X-User-Email": email
+      },
+      mode: "cors",
+      credentials: "omit"
+    });
+
+    if (!res.ok) throw new Error(`resultsListCORS ${res.status}`);
+    const json = await res.json();
+    return json.items || [];
+  }
+
+  async function fetchHistoryViaSupabase(extraOffset=0){
+    try{
+      const { data, error } = await sb
+        .from('results')
+        .select('id, created_at, top3, answers')
+        .eq('user_id', uid)
+        .order('created_at', { ascending:false })
+        .range(extraOffset, extraOffset + limit - 1);
+      if (error) throw error;
+      return Array.isArray(data) ? data : [];
+    }catch(e){
+      console.warn('Supabase fallback failed:', e.message);
+      return [];
+    }
+  }
+
+  async function fetchHistory(extraOffset=0){
+    let items = [];
+    try { items = await fetchHistoryViaFn(extraOffset); }
+    catch (e) {
+      console.warn('Function fetch failed, trying Supabase:', e.message);
+    }
+    if (!items.length) {
+      try { items = await fetchHistoryViaSupabase(extraOffset); }
+      catch (e) { console.warn('Supabase fetch also failed:', e.message); }
+    }
+    return items;
+  }
+
+  let items=[];
+  try{ items=await fetchHistory(0); }
+  catch(e){ console.error(e); }
+
+  // ========= also pull local "fresh" picks from sessionStorage =========
+  const localTop3    = JSON.parse(sessionStorage.getItem("carPicks")   || "null");
+  const localAnswers = JSON.parse(sessionStorage.getItem("carAnswers")|| "null");
+
+  let latest;
+  if (Array.isArray(localTop3) && localTop3.length){
+    latest = {
+      id:         "local-latest",
+      created_at: new Date().toISOString(),
+      top3:       localTop3,
+      answers:    localAnswers || {}
+    };
+    items = [latest, ...items];
+  } else {
+    latest = items[0] || null;
+  }
+
+  const moreExists = items.length > 1 && items.length >= limit;
+
+  // ========= header =========
+  root.innerHTML=`
+    <div class="hero">
+      <div class="brand">
+        <div class="badge-luxe"></div>
+        <div>
+          <h1 class="ttl">Your Luxury Garage</h1>
+          <p class="sub">${email ? `Signed in as ${email}` : ''}</p>
+        </div>
+      </div>
+      <div class="actions">
+        <a href="/quiz" class="btn btn-ghost">Retake quiz</a>
+        <button id="logout" class="btn btn-primary">Log out</button>
+      </div>
+    </div>
+  `;
+
+  // ========= latest block =========
+  const createdAt = latest?.created_at ? new Date(latest.created_at) : null;
+  const latestTop3 = Array.isArray(latest?.top3) ? latest.top3 : [];
+
+  const latestHtml = `
+    <div class="section-ttl">
+      <h2>Latest Matches ${createdAt?`<span class="sub">— ${createdAt.toLocaleDateString()}</span>`:''}</h2>
+      <div></div>
+    </div>
+    ${renderTop3Cards(latestTop3)}
+  `;
+
+  // ========= history list (skip first item because it's "latest") =========
+  function renderHistoryRows(list){
+    return list.map(r=>{
+      const dt=r.created_at?new Date(r.created_at):null;
+      return `
+        <div class="t-item">
+          <div class="t-row">
+            <div>
+              <div class="t-date">${dt?dt.toLocaleString():''}</div>
+              <div class="t-summary">${shortSummary(r)}</div>
+            </div>
+            <div class="t-actions">
+              <button class="btn btn-ghost" data-view="${r.id}">View</button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  const historyWithoutLatest = items.slice(1);
+
+  const historyHtml = `
+    <div class="section-ttl" style="margin-top:24px;">
+      <h2>History</h2>
+      <div class="sub">Your previous quiz results</div>
+    </div>
+    <div class="panel timeline" id="history-list">
+      ${
+        historyWithoutLatest.length
+          ? renderHistoryRows(historyWithoutLatest)
+          : `<div class="t-item"><div class="t-row"><div class="t-summary">No past results yet.</div></div></div>`
+      }
+      ${moreExists?`<div style="margin-top:12px;"><button id="load-more" class="btn btn-ghost">Load more</button></div>`:''}
+    </div>
+  `;
+
+  const container=document.createElement('div');
+  container.innerHTML=latestHtml+historyHtml;
+  root.appendChild(container);
+  window.__boot_done=true;
+
+  // ========= load more =========
+  document.getElementById('load-more')?.addEventListener('click',async()=>{
+    const btn=document.getElementById('load-more');
+    btn.disabled=true; btn.textContent='Loading…'; offset+=limit;
+    try{
+      const more=await fetchHistory(offset);
+      const filteredMore = Array.isArray(more)
+        ? more.filter(x=>x.id!=="local-latest")
+        : [];
+
+      if(!filteredMore.length){
+        btn.textContent='No more results'; 
+        return;
+      }
+      const beforeBtn=btn.parentNode;
+      beforeBtn.insertAdjacentHTML('beforebegin', renderHistoryRows(filteredMore));
+
+      if(filteredMore.length===limit){
+        btn.disabled=false; btn.textContent='Load more';
+      } else {
+        btn.textContent='No more results';
+      }
+
+      items=items.concat(filteredMore);
+    }catch(e){
+      console.error(e);
+      btn.textContent='Failed. Try again';
+      btn.disabled=false;
+    }
+  });
+
+  // ========= modal helpers (inline styles, no class .show) =========
+  function openModal(innerHTML){
+    histBody.innerHTML = innerHTML;
+    overlay.style.display = 'flex';
+    document.documentElement.classList.add('modal-open');
+    document.body.classList.add('modal-open');
+  }
+  function closeModal(){
+    overlay.style.display = 'none';
+    histBody.innerHTML = '';
+    document.documentElement.classList.remove('modal-open');
+    document.body.classList.remove('modal-open');
+  }
+
+  closeBtn?.addEventListener('click',closeModal);
+  overlay.addEventListener('click',e=>{
+    if(e.target===overlay) closeModal();
+  });
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape' && overlay.style.display==='flex') closeModal();
+  });
+
+  // ========= view button (history detail popup) =========
+  document.getElementById('history-list')?.addEventListener('click',e=>{
+    const btn=e.target.closest('[data-view]');
+    if(!btn) return;
+
+    const id=btn.getAttribute('data-view');
+    const rec=items.find(x=>String(x.id)===String(id));
+    if(!rec) return;
+
+    const picks   = Array.isArray(rec.top3)?rec.top3:[];
+    const when    = rec.created_at?new Date(rec.created_at):null;
+    const answers = rec.answers||{};
+
+    // answers list
+    const answersListHtml = `
+      <ul style="margin:0;padding-left:18px;list-style:disc;color:#d7dae0;font-size:14px;">
+        ${Object.entries(answers)
+          .filter(([k])=>!k.startsWith('_') && k!=='_meta')
+          .map(([key,val])=>{
+            const label=key.replace(/[-_]/g,' ').replace(/\b\w/g,l=>l.toUpperCase());
+            if(typeof val==='object'&&val!==null){
+              const toggles=Object.entries(val)
+                .filter(([_,v])=>v==='on')
+                .map(([k])=>(
+                  isNaN(k)
+                    ? `<li style="margin-left:12px;">${k.replace(/[-_]/g,' ').replace(/\b\w/g,l=>l.toUpperCase())}</li>`
+                    : `<li style="margin-left:12px;">${label}</li>`
+                )).join('');
+              return toggles
+                ? `<li style="margin-bottom:6px;"><strong>${label}:</strong><ul>${toggles}</ul></li>`
+                : '';
+            }
+            return `<li style="margin-bottom:6px;"><strong>${label}:</strong> ${val}</li>`;
+          }).join('')}
+      </ul>`;
+
+    // car cards, inline opaque styles
+    const carsHtml = picks.map((c,i)=>{
+      const title  = `${c.brand??''} ${c.model??''}`.trim();
+      const img    = c.image || '';
+      const reason = c.reason ?? '';
+
+      return `
+        <article
+          style="
+            position:relative;
+            border-radius:18px;
+            padding:16px 16px 14px;
+            background:#1a1d29;
+            border:1px solid rgba(255,255,255,0.12);
+            box-shadow:0 20px 50px rgba(0,0,0,0.6);
+            color:#fff;
+            font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+          "
+        >
+          <span
+            style="
+              position:absolute;
+              top:12px;
+              left:12px;
+              z-index:2;
+              padding:6px 10px;
+              border-radius:999px;
+              font-size:12px;
+              font-weight:700;
+              background:linear-gradient(135deg,#d4af37,#b88a1e);
+              color:#0f1117;
+              box-shadow:0 10px 26px rgba(212,175,55,.35);
+            "
+          >#${i+1}</span>
+
+          ${
+            img
+              ? `<img src="${img}" alt="${title||'Car image'}"
+                   style="
+                     width:100%;
+                     height:190px;
+                     object-fit:cover;
+                     display:block;
+                     background:#0f1117;
+                     border-radius:12px;
+                     margin-bottom:12px;
+                   "/>`
+              : `<div
+                   style="
+                     width:100%;
+                     height:190px;
+                     background:#0f1117;
+                     border-radius:12px;
+                     margin-bottom:12px;
+                   "
+                 ></div>`
+          }
+
+          <div>
+            <h3
+              style="
+                margin:0 0 6px;
+                font-family:'Cormorant Garamond',serif;
+                font-size:24px;
+                font-weight:700;
+                color:#fff;
+                line-height:1.2;
+              "
+            >${title || 'Car'}</h3>
+
+            <p
+              style="
+                margin:0;
+                color:#d0d3d9;
+                font-size:14px;
+                line-height:1.4;
+              "
+            >${reason}</p>
+          </div>
+        </article>
+      `;
+    }).join('');
+
+    // final modal HTML body
+    const detail = `
+      <div style="color:#9ca3af;font-size:13px;margin-bottom:12px;">
+        ${when ? when.toLocaleString() : ''}
+      </div>
+
+      <div
+        style="
+          display:grid;
+          gap:16px;
+          grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));
+          margin-bottom:20px;
+        "
+      >
+        ${carsHtml}
+      </div>
+
+      <div
+        style="
+          background:#151822;
+          border:1px solid rgba(255,255,255,0.12);
+          border-radius:16px;
+          padding:16px;
+          color:#e5e7eb;
+          box-shadow:none;
+          font-size:14px;
+          line-height:1.4;
+        "
+      >
+        <h4
+          style="
+            margin:0 0 12px;
+            font-size:18px;
+            font-weight:600;
+            color:#fff;
+            font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+          "
+        >
+          Your Quiz Answers
+        </h4>
+        ${answersListHtml}
+      </div>
+    `;
+
+    openModal(detail);
+  });
+
+  // ========= logout =========
+  document.getElementById('logout')?.addEventListener('click',async()=>{
+    try{ await sb.auth.signOut(); }finally{
+      sessionStorage.removeItem("sbSession");
+      sessionStorage.removeItem("sbUserId");
+      sessionStorage.removeItem("sbEmail");
+      sessionStorage.removeItem("carPicks");
+      sessionStorage.removeItem("carAnswers");
+      location.href='/quiz';
+    }
+  });
+
+  // keep session fresh in storage
+  sb.auth.onAuthStateChange((_event, sess)=>{
+    if(sess){
+      sessionStorage.setItem('sbSession', JSON.stringify(sess));
+      sessionStorage.setItem('sbUserId', sess.user?.id || '');
+      sessionStorage.setItem('sbEmail',  sess.user?.email || '');
+    }
+  });
+})();
+</script>
