@@ -1,0 +1,431 @@
+<script>
+(() => {
+  /* ===================== CONFIG ===================== */
+  const FN_URL = "https://carbackendd.netlify.app/.netlify/functions/carMatchCORS";
+  const RESULTS_URL  = "/results";
+  const AUTO_NEXT_SKIP = new Set(["q6","q9"]);
+  const DEBUG = true;
+
+  /* ===================== HELPERS ===================== */
+  const log = (...a) => DEBUG && console.log("[quiz]", ...a);
+
+  const withTimeout = async (p, ms=12000) => {
+    let t; const to = new Promise((_, rej)=> t=setTimeout(()=>rej(new Error("timeout")), ms));
+    try { return await Promise.race([p, to]); } finally { clearTimeout(t); }
+  };
+
+  const callFn = (url, body) =>
+    fetch(url, {
+      method: "POST",
+      mode: "cors",
+      credentials: "omit",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+
+  const toB64 = (obj) => btoa(encodeURIComponent(JSON.stringify(obj)));
+
+  function collectAnswers(root) {
+    const out = {};
+    const fields = root.querySelectorAll('input, select, textarea');
+    for (const el of fields) {
+      if (el.disabled || !el.name) continue;
+      const name = el.name.trim();
+      const type = (el.type || '').toLowerCase();
+      if (type === 'radio')   { if (el.checked) out[name] = el.value; continue; }
+      if (type === 'checkbox'){ if (el.checked) (out[name] ??= []).push(el.value); continue; }
+      out[name] = el.value;
+    }
+    out._meta = { submittedAt: new Date().toISOString(), ua: navigator.userAgent };
+    return out;
+  }
+
+  function wireFakeSubmit(form) {
+    const fake = document.querySelector('.submit-btn, [data-submit="true"]');
+    if (!fake) return;
+    fake.addEventListener('click', (e) => {
+      if (fake.type !== 'submit') {
+        e.preventDefault();
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        } else {
+          form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        }
+      }
+    });
+  }
+
+  /* --- tiny custom validation so user didn't skip everything --- */
+  function validateVisibleSteps(formRoot) {
+    // rule: every *visible* .quiz_step must have at least one checked radio,
+    // unless that step has any [data-optional] flag
+    const steps = Array.from(formRoot.querySelectorAll('.quiz_step'))
+      .filter(step => step && document.body.contains(step));
+
+    for (const step of steps) {
+      if (step.hasAttribute('data-optional')) continue;
+
+      const radios = Array.from(step.querySelectorAll('input[type="radio"][name]'));
+      if (!radios.length) continue;
+
+      const oneChecked = radios.some(r => r.checked);
+      if (!oneChecked) {
+        step.scrollIntoView({behavior:"smooth",block:"center"});
+        alert("Please answer this question before continuing.");
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /* ===================== STEPPER ===================== */
+  document.addEventListener('DOMContentLoaded', () => {
+    const formRoot = document.getElementById('quiz_form');
+    if (!formRoot) { console.error('[quiz] #quiz_form not found'); return; }
+
+    // kill native validation
+    formRoot.setAttribute('novalidate', 'novalidate');
+    formRoot.querySelectorAll('[required]').forEach(el => el.removeAttribute('required'));
+
+    const initialSteps   = Array.from(formRoot.querySelectorAll('.quiz_step'));
+    const originalOrder  = initialSteps.map(s => s.id);
+    const originalHTML   = new Map(initialSteps.map(s => [s.id, s.outerHTML]));
+    const removedSet     = new Set();
+    const questionRemovedMap = new Map();
+
+    const esc = (id) =>
+      (window.CSS && CSS.escape)
+        ? CSS.escape(id)
+        : String(id).replace(/([ !"#$%&'()*+,.\/:;<=>?@[\\\]^`{|}~])/g,'\\$1');
+
+    const currentSteps = () => Array.from(formRoot.querySelectorAll('.quiz_step'));
+
+    // 🔧 FIXED VERSION
+    function restoreStep(id) {
+      if (!originalHTML.has(id) || !removedSet.has(id)) return;
+
+      // recreate the step DOM
+      const temp = document.createElement('div');
+      temp.innerHTML = (originalHTML.get(id) || "").trim();
+      const clone = temp.firstElementChild;
+
+      // OLD BEHAVIOR (BROKE IN SOME CASES):
+      // we tried to insertBefore(...) using the "next" original neighbor,
+      // but that neighbor isn't always a DIRECT child of formRoot.
+      // That caused the NotFoundError.
+      //
+      // NEW BEHAVIOR:
+      // just append at the end of the form. Safe. No NotFoundError.
+      formRoot.appendChild(clone);
+
+      attachListenersToStep(clone);
+      removedSet.delete(id);
+    }
+
+    function removeStep(id) {
+      const el = formRoot.querySelector('#' + esc(id));
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+      removedSet.add(id);
+    }
+
+    function getNextIndex(i){
+      const s=currentSteps();
+      let n=i+1;
+      while(n<s.length && removedSet.has(s[n].id)) n++;
+      return n;
+    }
+
+    function getPrevIndex(i){
+      const s=currentSteps();
+      let p=i-1;
+      while(p>=0 && removedSet.has(s[p].id)) p--;
+      return p;
+    }
+
+    function showStep(index){
+      const s=currentSteps();
+      if(index<0||index>=s.length) return;
+      s.forEach((el,i)=>{
+        el.classList.remove('active','prev');
+        if(i===index) el.classList.add('active');
+        else if(i<index) el.classList.add('prev');
+      });
+      (formRoot.scrollIntoView?.({behavior:'smooth',block:'start'}))
+        || window.scrollTo({top:Math.max(0, formRoot.offsetTop-20),behavior:'smooth'});
+    }
+
+    function applyRemovalsForStep(stepId, removeList) {
+      // restore anything we removed LAST time because of this question
+      if (questionRemovedMap.has(stepId)) {
+        questionRemovedMap.get(stepId).forEach(id => {
+          if (removedSet.has(id)) restoreStep(id);
+        });
+        questionRemovedMap.delete(stepId);
+      }
+
+      const toRemove = (Array.isArray(removeList) ? removeList : String(removeList||'').split(','))
+        .map(s => s.trim().toLowerCase())
+        .filter(Boolean);
+
+      const actuallyRemoved = [];
+      toRemove.forEach(id => {
+        if (id === stepId) return;
+        const target = formRoot.querySelector('#' + esc(id));
+        if (target) {
+          removeStep(id);
+          actuallyRemoved.push(id);
+        }
+      });
+
+      if (actuallyRemoved.length) {
+        questionRemovedMap.set(stepId, actuallyRemoved);
+      }
+
+      const s=currentSteps();
+      const idx=s.findIndex(x=>x.id===stepId);
+      const next=getNextIndex(idx);
+      if (next < s.length) setTimeout(()=>showStep(next), 20);
+    }
+
+    function attachListenersToStep(stepEl){
+      if (!stepEl) return;
+      const stepId = stepEl.id;
+
+      // radios -> auto-advance
+      stepEl.querySelectorAll('input[type="radio"]').forEach(radio=>{
+        radio.removeEventListener('change', radio._quizListener);
+        const onChange = e => {
+          if (!AUTO_NEXT_SKIP.has(stepId)) {
+            const dr = (e.target?.dataset?.remove || "");
+            if (dr) applyRemovalsForStep(stepId, dr);
+            else handleRadioChangeFallback(e, stepId);
+          }
+        };
+        radio._quizListener = onChange;
+        radio.addEventListener('change', onChange);
+
+        radio.removeEventListener('click', radio._quizClickFix);
+        const clickFix = () => {
+          if(radio.checked && !AUTO_NEXT_SKIP.has(stepId)) {
+            const dr = (radio.dataset?.remove || "");
+            if (dr) applyRemovalsForStep(stepId, dr);
+            else handleRadioChangeFallback({target:radio}, stepId);
+          }
+        };
+        radio._quizClickFix = clickFix;
+        radio.addEventListener('click', clickFix);
+      });
+
+      // budget special logic (q2)
+      if (stepId === 'q2') {
+        const icons = stepEl.querySelectorAll('.quiz_option-icon[data-remove], #Total-budget, #Monthly-budget');
+        icons.forEach(el=>{
+          el.removeEventListener('click', el._q2Click);
+          el._q2Click = ()=>{
+            icons.forEach(x => {
+              x.setAttribute('aria-pressed','false');
+              x.classList.remove('is-active');
+            });
+            el.setAttribute('aria-pressed','true');
+            el.classList.add('is-active');
+
+            let removeTargets = (el.getAttribute('data-remove') || "").trim().toLowerCase();
+            if (!removeTargets && el.id === 'Total-budget')   removeTargets = 'q3';
+            if (!removeTargets && el.id === 'Monthly-budget') removeTargets = 'q4';
+
+            if (removeTargets) applyRemovalsForStep('q2', removeTargets);
+          };
+          el.addEventListener('click', el._q2Click, true);
+        });
+      }
+
+      // checkboxes (no auto-next)
+      stepEl.querySelectorAll('input[type="checkbox"]').forEach(cb=>{
+        cb.removeEventListener('change', cb._quizListener);
+        const noop=()=>{};
+        cb._quizListener=noop;
+        cb.addEventListener('change', noop);
+      });
+
+      // prev / next buttons
+      const prevBtn = stepEl.querySelector('.prev-btn');
+      if (prevBtn){
+        prevBtn.removeEventListener('click', prevBtn._quizPrevListener);
+        const l = ev=>{
+          ev.preventDefault();
+          const s=currentSteps();
+          const idx=s.findIndex(x=>x===stepEl);
+          const p=getPrevIndex(idx);
+          if(p>=0) showStep(p);
+        };
+        prevBtn._quizPrevListener = l;
+        prevBtn.addEventListener('click', l);
+      }
+
+      const nextBtn = stepEl.querySelector('.next-btn');
+      if (nextBtn){
+        nextBtn.removeEventListener('click', nextBtn._quizNextListener);
+        const l = ev=>{
+          ev.preventDefault();
+          const s=currentSteps();
+          const idx=s.findIndex(x=>x===stepEl);
+          const n=getNextIndex(idx);
+          if(n<s.length) showStep(n);
+        };
+        nextBtn._quizNextListener = l;
+        nextBtn.addEventListener('click', l);
+      }
+
+      const startBtn = stepEl.querySelector('.start-btn');
+      if (startBtn){
+        startBtn.removeEventListener('click', startBtn._quizStartListener);
+        const l = ev=>{
+          ev.preventDefault();
+          const s=currentSteps();
+          const idx=s.findIndex(x=>x===stepEl);
+          const n=getNextIndex(idx);
+          if(n<s.length) showStep(n);
+        };
+        startBtn._quizStartListener = l;
+        startBtn.addEventListener('click', l);
+      }
+    }
+
+    function handleRadioChangeFallback(e, stepId){
+      const s=currentSteps();
+      const idx=s.findIndex(x=>x.id===stepId);
+      const next=getNextIndex(idx);
+      if (next < s.length) setTimeout(()=>showStep(next), 20);
+    }
+
+    // attach listeners on load
+    initialSteps.forEach(attachListenersToStep);
+    showStep(0);
+  });
+
+  /* ===================== PROGRESS BAR ===================== */
+  document.addEventListener("DOMContentLoaded", function(){
+    const steps=["q1","q2","q3","q4","q5","q6","q7","q8","q9","q10"];
+    const bar=document.getElementById("quiz_progress-bar");
+    const obs=new MutationObserver(()=>{
+      const active=document.querySelector(".quiz_step.active");
+      if (active && steps.includes(active.id)) {
+        const visible=steps.filter(id=>document.getElementById(id));
+        const idx=visible.indexOf(active.id)+1;
+        const pct=(idx/visible.length)*100;
+        if (bar) bar.style.width=pct+"%";
+      }
+    });
+    const form=document.getElementById("quiz_form");
+    if (form) obs.observe(form,{attributes:true,childList:true,subtree:true});
+  });
+
+  /* ===================== SUBMIT → AI → SAVE GUEST → REDIRECT ===================== */
+  document.addEventListener("DOMContentLoaded", ()=>{
+    const form = document.getElementById("quiz_form") || document.querySelector("form");
+    if(!form) return;
+
+    form.setAttribute('novalidate','novalidate');
+    form.querySelectorAll('[required]').forEach(el => el.removeAttribute('required'));
+
+    wireFakeSubmit(form);
+
+    form.addEventListener("submit", async (e)=>{
+      e.preventDefault();
+
+      const formRoot = document.getElementById('quiz_form');
+      if (!validateVisibleSteps(formRoot)) {
+        return;
+      }
+
+      const submitBtn = form.querySelector('button[type="submit"], input[type="submit"], .submit-btn, [data-submit="true"]');
+      const originalText = submitBtn ? (submitBtn.innerText || submitBtn.value) : null;
+
+      try{
+        if (submitBtn){
+          if (submitBtn.innerText !== undefined) submitBtn.innerText = "Finding your cars…";
+          if (submitBtn.value !== undefined)     submitBtn.value     = "Finding your cars…";
+          submitBtn.disabled = true;
+        }
+
+        const answers = collectAnswers(form);
+        log("answers", answers);
+
+        let text = null;
+
+        // 1. try live
+        try {
+          const res = await withTimeout(callFn(FN_URL, { answers }), 12000);
+          if (!res.ok) {
+            const errTxt = await res.text().catch(()=>"(no body)");
+            console.warn("[quiz] carMatch non-OK:", res.status, errTxt);
+            throw new Error("non-200");
+          }
+          text = await res.text();
+        } catch (err) {
+          console.warn("[quiz] carMatch failed, trying mock=1…", err?.message || err);
+          // 2. fallback mock
+          const mockURL = FN_URL + (FN_URL.includes('?') ? '&' : '?') + 'mock=1';
+          try {
+            const mock = await withTimeout(callFn(mockURL, { answers }), 6000);
+            if (!mock.ok) {
+              const mTxt = await mock.text().catch(()=>"(no body)");
+              console.warn("[quiz] mock non-OK:", mock.status, mTxt);
+              throw new Error("mock non-200");
+            }
+            text = await mock.text();
+          } catch (e2) {
+            alert("Can't reach the recommendation service right now. Please try again.");
+            return;
+          }
+        }
+
+        let picks;
+        try { picks = JSON.parse(text); }
+        catch {
+          const m = text && text.match(/\[[\s\S]*\]$/);
+          if (m) { try { picks = JSON.parse(m[0]); } catch(_){} }
+        }
+
+        if (!Array.isArray(picks) || picks.length === 0) {
+          console.warn("[quiz] parse error. Raw:", text);
+          alert("We couldn’t parse the recommendations. Please try again.");
+          return;
+        }
+
+        // stash locally for results + signup modal
+        sessionStorage.setItem("carPicks", JSON.stringify(picks));
+        sessionStorage.setItem("carAnswers", JSON.stringify(answers));
+
+        // save anonymous guest result (non-blocking)
+        try {
+          await fetch("https://carbackendd.netlify.app/.netlify/functions/resultsSavePublicCORS", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              answers: answers,
+              top3: picks
+            })
+          });
+        } catch (saveErr) {
+          console.warn("[quiz] guest save failed (non-blocking)", saveErr);
+        }
+
+        const picksB64 = toB64(picks);
+        window.location.assign(`${RESULTS_URL}?picks=${encodeURIComponent(picksB64)}`);
+
+      } finally {
+        if (submitBtn){
+          if (submitBtn.innerText !== undefined) submitBtn.innerText = originalText;
+          if (submitBtn.value !== undefined)     submitBtn.value     = originalText;
+          submitBtn.disabled = false;
+        }
+      }
+    }, { capture:true });
+  });
+})();
+</script>
