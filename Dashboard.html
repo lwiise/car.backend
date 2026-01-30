@@ -1,6 +1,6 @@
 <!-- =====================  USER DASHBOARD (FINAL SYNCED, FIXED MODAL)  ===================== -->
 <!-- Fonts -->
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700&family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet" />
 
 <!-- Supabase -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -17,14 +17,23 @@
 
 <style>
   :root{
-    --bg1:#0b0c10;--bg2:#0f1117;--ink:#e5e7eb;--muted:#b6bdc7;
-    --gold:#d4af37;--gold-2:#b88a1e;
+    --bg-dark:#060a0e;
+    --bg-darker:#030608;
+    --ink:rgba(255,255,255,.94);
+    --muted:rgba(255,255,255,.68);
+    --outline:rgba(255,255,255,.1);
+    --surface:rgba(142,165,182,.05);
+    --overlay-light:rgba(4,8,12,.3);
+    --overlay:rgba(4,8,12,.5);
+    --overlay-dark:rgba(4,8,12,.6);
+    --accent:142,165,182;
   }
   html,body{
-    background:radial-gradient(1200px 800px at 20% -10%,#151821 0%,#0b0c10 45%,#050608 100%),
-               linear-gradient(180deg,var(--bg1),var(--bg2));
+    background:
+      radial-gradient(1200px 800px at 15% -10%, rgba(var(--accent),0.12), transparent 60%),
+      linear-gradient(180deg,var(--bg-dark),var(--bg-darker));
     color:var(--ink);
-    font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    font-family:"Montserrat",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
     margin:0
   }
   html.modal-open,body.modal-open{overflow:hidden}
@@ -34,40 +43,44 @@
   .brand{display:flex;align-items:center;gap:14px}
   .badge-luxe{
     width:36px;height:36px;border-radius:50%;
-    background:linear-gradient(135deg,var(--gold),var(--gold-2));
-    box-shadow:0 8px 22px rgba(212,175,55,.35)
+    background:
+      radial-gradient(circle at 30% 30%, rgba(255,255,255,.35), rgba(var(--accent),0.25) 45%, rgba(4,8,12,.6) 78%),
+      linear-gradient(135deg, rgba(var(--accent),0.45), rgba(var(--accent),0.12));
+    border:1px solid var(--outline);
+    box-shadow:0 8px 22px var(--overlay)
   }
   .ttl{
     margin:0;
-    font-family:"Cormorant Garamond",serif;
+    font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
     font-weight:700;letter-spacing:.3px;
     font-size:40px;line-height:1.1
   }
   .sub{margin:6px 0 0;color:var(--muted);font-size:14px}
   .actions{display:flex;gap:10px;flex-wrap:wrap}
   .btn{
-    appearance:none;border:none;cursor:pointer;
+    appearance:none;border:1px solid var(--outline);cursor:pointer;
     border-radius:14px;padding:10px 14px;
     font-weight:700;letter-spacing:.02em;
     transition:transform .06s,box-shadow .25s,background .25s,opacity .2s;
     font-size:1em;text-decoration:none;
-    background:rgba(255,255,255,.08);color:var(--ink)
+    background:rgba(255,255,255,.06);color:var(--ink)
   }
-  .btn-ghost{border:1px solid rgba(255,255,255,.14)}
-  .btn-ghost:hover{background:rgba(255,255,255,.12)}
+  .btn-ghost{background:transparent;border:1px solid var(--outline)}
+  .btn-ghost:hover{background:rgba(255,255,255,.08)}
   .btn-primary{
-    background:linear-gradient(135deg,var(--gold),var(--gold-2));
-    color:#0e0f12;
-    box-shadow:0 12px 36px rgba(212,175,55,.32)
+    background:linear-gradient(135deg, rgba(var(--accent),0.45), rgba(var(--accent),0.15));
+    color:var(--ink);
+    border:1px solid rgba(var(--accent),0.45);
+    box-shadow:0 12px 36px var(--overlay)
   }
-  .btn-primary:hover{box-shadow:0 16px 44px rgba(212,175,55,.42)}
+  .btn-primary:hover{box-shadow:0 16px 44px var(--overlay-dark)}
   .btn:disabled{opacity:.5;cursor:not-allowed}
 
   .panel{
     padding:16px;border-radius:16px;
-    background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.04));
-    border:1px solid rgba(255,255,255,.18);
-    box-shadow:0 24px 60px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.15);
+    background:linear-gradient(180deg, rgba(var(--accent),0.12), var(--surface));
+    border:1px solid var(--outline);
+    box-shadow:0 24px 60px var(--overlay),inset 0 1px 0 rgba(255,255,255,.06);
     margin-bottom:16px
   }
   .section-ttl{
@@ -76,7 +89,7 @@
   }
   .section-ttl h2{
     margin:0;
-    font-family:"Cormorant Garamond",serif;
+    font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
     font-weight:700;
     font-size:28px
   }
@@ -89,50 +102,51 @@
 
   .card{
     position:relative;overflow:hidden;border-radius:18px;
-    background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.03)),rgba(22,22,25,.55);
-    border:1px solid rgba(255,255,255,.18);
-    box-shadow:0 22px 60px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.12)
+    background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)), var(--surface);
+    border:1px solid var(--outline);
+    box-shadow:0 22px 60px var(--overlay),inset 0 1px 0 rgba(255,255,255,.08)
   }
   .card:before{
     content:"";position:absolute;inset:auto -40% 60% -40%;
     height:140%;
-    background:radial-gradient(600px 300px at 50% 0%,rgba(212,175,55,.16),transparent 60%);
+    background:radial-gradient(600px 300px at 50% 0%,rgba(var(--accent),0.22),transparent 60%);
     filter:blur(20px);pointer-events:none
   }
   .badge{
     position:absolute;top:12px;left:12px;z-index:2;
     padding:6px 10px;border-radius:999px;
-    font-size:12px;font-weight:700;color:#0f1117;
-    background:linear-gradient(135deg,var(--gold),var(--gold-2));
-    box-shadow:0 10px 26px rgba(212,175,55,.35)
+    font-size:12px;font-weight:700;color:var(--bg-darker);
+    background:linear-gradient(135deg, rgba(var(--accent),0.6), rgba(var(--accent),0.2));
+    border:1px solid rgba(var(--accent),0.45);
+    box-shadow:0 10px 26px var(--overlay)
   }
   .card-img{
     width:100%;height:190px;object-fit:cover;
-    display:block;background:#0f1117;opacity:.95
+    display:block;background:var(--bg-darker);opacity:.95
   }
   .card-body{padding:16px}
   .card h3{
     margin:0 0 6px;
-    font-family:"Cormorant Garamond",serif;
+    font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
     font-size:24px;font-weight:700;color:#fff
   }
-  .card p{margin:0;color:#d0d3d9;font-size:14px}
+  .card p{margin:0;color:rgba(255,255,255,.72);font-size:14px}
 
   .timeline{position:relative;padding-left:22px}
   .timeline:before{
     content:"";position:absolute;left:8px;top:0;bottom:0;width:2px;
-    background:linear-gradient(180deg,rgba(212,175,55,.4),transparent)
+    background:linear-gradient(180deg,rgba(var(--accent),0.45),transparent)
   }
   .t-item{position:relative;margin:12px 0 0 0;padding-left:18px}
   .t-item:before{
     content:"";position:absolute;left:-2px;top:6px;width:10px;height:10px;border-radius:50%;
-    background:linear-gradient(135deg,var(--gold),var(--gold-2));
-    box-shadow:0 0 0 4px rgba(212,175,55,.18)
+    background:linear-gradient(135deg, rgba(var(--accent),0.6), rgba(var(--accent),0.2));
+    box-shadow:0 0 0 4px rgba(var(--accent),0.18)
   }
   .t-row{
     display:flex;gap:12px;align-items:center;justify-content:space-between;
     flex-wrap:wrap;padding:10px 12px;border-radius:12px;
-    background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12)
+    background:var(--overlay-light);border:1px solid var(--outline)
   }
   .t-date{color:var(--muted);font-size:13px}
   .t-summary{color:#fff;font-weight:700;font-size:14px}
@@ -146,7 +160,7 @@
   .loader{
     width:18px;height:18px;border-radius:50%;
     border:3px solid rgba(255,255,255,.25);
-    border-top-color:var(--gold);
+    border-top-color:rgba(var(--accent),0.8);
     animation:spin .9s linear infinite
   }
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -171,7 +185,7 @@
     if(!root) return;
     root.innerHTML=`
       <div class="panel">
-        <h2 style="margin:0 0 8px;font-family:'Cormorant Garamond',serif;">Something took too long</h2>
+        <h2 style="margin:0 0 8px;font-family:'Syne',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;">Something took too long</h2>
         <p class="sub">Auth or network issue. Try reloading, sign in here, or go back to the quiz.</p>
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
           <a class="btn btn-ghost" href="/quiz">Go to Quiz</a>
@@ -195,7 +209,7 @@
     justify-content:center;
     padding:0 16px;
     z-index:2147483647;
-    background:rgba(0,0,0,0.8);
+    background:var(--overlay-dark);
     backdrop-filter:none;
     -webkit-backdrop-filter:none;
   "
@@ -212,11 +226,11 @@
       overflow:auto;
       border-radius:18px;
       padding:24px 20px 20px;
-      background:#0f1117;
-      border:1px solid rgba(255,255,255,0.14);
+      background:var(--bg-dark);
+      border:1px solid var(--outline);
       box-shadow:0 30px 80px rgba(0,0,0,0.9);
-      color:#e5e7eb;
-      font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color:var(--ink);
+      font-family:"Montserrat",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
     "
   >
     <div
@@ -232,10 +246,10 @@
         id="hist-ttl"
         style="
           margin:0;
-          font-family:'Cormorant Garamond',serif;
+          font-family:'Syne',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
           font-size:26px;
           line-height:1.2;
-          color:#fff;
+          color:var(--ink);
         "
       >Result details</h3>
 
@@ -249,16 +263,16 @@
           display:grid;
           place-items:center;
           cursor:pointer;
-          background:rgba(255,255,255,.08);
-          border:1px solid rgba(255,255,255,.16);
-          color:#fff;
+          background:var(--overlay-light);
+          border:1px solid var(--outline);
+          color:var(--ink);
           font-size:16px;
           line-height:1;
         "
       >✕</button>
     </div>
 
-    <div id="hist-body" style="color:#d0d3d9; font-size:14px; line-height:1.5;"></div>
+    <div id="hist-body" style="color:rgba(255,255,255,.72); font-size:14px; line-height:1.5;"></div>
   </div>
 </div>
 
@@ -282,7 +296,7 @@
   function fatal(msg){
     root.innerHTML=`
       <div class="panel">
-        <h2 style="margin:0 0 8px;font-family:'Cormorant Garamond',serif;">Something went wrong</h2>
+        <h2 style="margin:0 0 8px;font-family:'Syne',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;">Something went wrong</h2>
         <p class="sub">${msg}</p>
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="window.__inlineLogin()">Sign in with Google</button>
@@ -605,7 +619,7 @@
 
     // answers list
     const answersListHtml = `
-      <ul style="margin:0;padding-left:18px;list-style:disc;color:#d7dae0;font-size:14px;">
+      <ul style="margin:0;padding-left:18px;list-style:disc;color:rgba(255,255,255,.72);font-size:14px;">
         ${Object.entries(answers)
           .filter(([k])=>!k.startsWith('_') && k!=='_meta')
           .map(([key,val])=>{
@@ -638,11 +652,11 @@
             position:relative;
             border-radius:18px;
             padding:16px 16px 14px;
-            background:#1a1d29;
-            border:1px solid rgba(255,255,255,0.12);
-            box-shadow:0 20px 50px rgba(0,0,0,0.6);
-            color:#fff;
-            font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            background:var(--overlay);
+            border:1px solid var(--outline);
+            box-shadow:0 20px 50px var(--overlay-dark);
+            color:var(--ink);
+            font-family:"Montserrat",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
           "
         >
           <span
@@ -655,9 +669,10 @@
               border-radius:999px;
               font-size:12px;
               font-weight:700;
-              background:linear-gradient(135deg,#d4af37,#b88a1e);
-              color:#0f1117;
-              box-shadow:0 10px 26px rgba(212,175,55,.35);
+              background:linear-gradient(135deg, rgba(var(--accent),0.6), rgba(var(--accent),0.2));
+              color:var(--bg-darker);
+              border:1px solid rgba(var(--accent),0.45);
+              box-shadow:0 10px 26px var(--overlay);
             "
           >#${i+1}</span>
 
@@ -669,7 +684,7 @@
                      height:190px;
                      object-fit:cover;
                      display:block;
-                     background:#0f1117;
+                     background:var(--bg-darker);
                      border-radius:12px;
                      margin-bottom:12px;
                    "/>`
@@ -677,7 +692,7 @@
                    style="
                      width:100%;
                      height:190px;
-                     background:#0f1117;
+                     background:var(--bg-darker);
                      border-radius:12px;
                      margin-bottom:12px;
                    "
@@ -688,10 +703,10 @@
             <h3
               style="
                 margin:0 0 6px;
-                font-family:'Cormorant Garamond',serif;
+                font-family:'Syne',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
                 font-size:24px;
                 font-weight:700;
-                color:#fff;
+                color:var(--ink);
                 line-height:1.2;
               "
             >${title || 'Car'}</h3>
@@ -699,7 +714,7 @@
             <p
               style="
                 margin:0;
-                color:#d0d3d9;
+                color:rgba(255,255,255,.72);
                 font-size:14px;
                 line-height:1.4;
               "
@@ -711,7 +726,7 @@
 
     // final modal HTML body
     const detail = `
-      <div style="color:#9ca3af;font-size:13px;margin-bottom:12px;">
+      <div style="color:var(--muted);font-size:13px;margin-bottom:12px;">
         ${when ? when.toLocaleString() : ''}
       </div>
 
@@ -728,11 +743,11 @@
 
       <div
         style="
-          background:#151822;
-          border:1px solid rgba(255,255,255,0.12);
+          background:var(--overlay-light);
+          border:1px solid var(--outline);
           border-radius:16px;
           padding:16px;
-          color:#e5e7eb;
+          color:var(--ink);
           box-shadow:none;
           font-size:14px;
           line-height:1.4;
@@ -743,8 +758,8 @@
             margin:0 0 12px;
             font-size:18px;
             font-weight:600;
-            color:#fff;
-            font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            color:var(--ink);
+            font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
           "
         >
           Your Quiz Answers

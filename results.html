@@ -46,16 +46,17 @@
   const tpl = document.createElement("template");
   tpl.innerHTML = html`
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700&family=Montserrat:wght@400;500;600&display=swap');
 
       :host { all: initial; }
       .root{
-        --bg:#0b0c0f; --bg-2:#0f1116; --text:#f5f7fa; --muted:#a9b0bc;
-        --gold:#caa969; --gold-2:#edddbe; --glass:rgba(255,255,255,.06);
-        --stroke:rgba(255,255,255,.08); --ring:rgba(202,169,105,.25);
-        --shadow:0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04);
+        --bg:#060a0e; --bg-2:#030608; --text:rgba(255,255,255,.94); --muted:rgba(255,255,255,.68);
+        --outline:rgba(255,255,255,.1); --surface:rgba(142,165,182,.05);
+        --overlay-light:rgba(4,8,12,.3); --overlay:rgba(4,8,12,.5); --overlay-dark:rgba(4,8,12,.6);
+        --accent:142,165,182;
+        --shadow:0 10px 30px rgba(4,8,12,.45), inset 0 1px 0 rgba(255,255,255,.04);
         --radius:18px;
-        font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+        font-family:"Montserrat",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
         color:var(--text);
         background:var(--bg);
         position:relative; isolation:isolate;
@@ -64,20 +65,20 @@
       .root::before{
         content:""; position:absolute; inset:0;
         background:
-          radial-gradient(900px 600px at 15% -10%, rgba(202,169,105,.18), transparent 60%),
-          radial-gradient(1000px 700px at 85% -10%, rgba(120,167,255,.12), transparent 55%),
+          radial-gradient(900px 600px at 15% -10%, rgba(var(--accent),.18), transparent 60%),
+          radial-gradient(1000px 700px at 85% -10%, rgba(var(--accent),.08), transparent 55%),
           linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 100%);
         z-index:-1;
       }
       .wrap{ max-width:1200px; margin:0 auto; }
       .kicker{
-        letter-spacing:.22em; text-transform:uppercase; color:var(--gold-2);
+        letter-spacing:.22em; text-transform:uppercase; color:rgba(var(--accent),.85);
         font-size:12px; font-weight:600; opacity:.9;
       }
       .title{
-        font-family:"Playfair Display",serif; font-weight:700; line-height:1.12;
+        font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; font-weight:700; line-height:1.12;
         font-size:clamp(28px,4.2vw,46px); margin:.15em 0 .35em;
-        background:linear-gradient(180deg,#fff 0%,#e8ebf0 60%,#cdd6e3 100%);
+        background:linear-gradient(180deg, rgba(255,255,255,.98) 0%, rgba(255,255,255,.82) 60%, rgba(255,255,255,.68) 100%);
         -webkit-background-clip:text; background-clip:text; color:transparent;
       }
       .sub{
@@ -91,13 +92,14 @@
         position:relative; appearance:none; border:0; border-radius:999px;
         padding:10px 14px;
         font-weight:600; font-size:13px; letter-spacing:.02em; color:var(--text);
-        background:linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,0));
+        background:rgba(255,255,255,.06);
+        border:1px solid var(--outline);
         transition: filter .25s ease, transform .2s ease, box-shadow .2s ease;
         outline:none; overflow:hidden; cursor:pointer; text-decoration:none;
       }
       .btn::before{
         content:""; position:absolute; inset:0; border-radius:inherit; padding:1px;
-        background:linear-gradient(90deg, rgba(202,169,105,.55), rgba(202,169,105,.15));
+        background:linear-gradient(90deg, rgba(var(--accent),.55), rgba(var(--accent),.15));
         -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
         -webkit-mask-composite:xor; mask-composite:exclude;
         pointer-events:none;
@@ -106,8 +108,9 @@
         transform:translateY(-1px); filter:brightness(1.06);
       }
       .btn.primary{
-        background:linear-gradient(135deg, #d4af37, #b88a1e);
-        color:#0e0f12;
+        background:linear-gradient(135deg, rgba(var(--accent),.45), rgba(var(--accent),.15));
+        border:1px solid rgba(var(--accent),.45);
+        color:var(--text);
       }
 
       .grid{
@@ -119,13 +122,13 @@
 
       .card{
         position:relative; border-radius:var(--radius); padding:22px 20px 18px;
-        background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02)), var(--glass);
-        border:1px solid var(--stroke);
+        background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)), var(--surface);
+        border:1px solid var(--outline);
         box-shadow:var(--shadow);
         overflow:hidden;
       }
       .rank{
-        font-size:12px; color:var(--gold-2); letter-spacing:.16em;
+        font-size:12px; color:rgba(var(--accent),.85); letter-spacing:.16em;
         text-transform:uppercase; margin-bottom:6px;
       }
       .name{ display:flex; align-items:center; gap:10px; }
@@ -133,18 +136,18 @@
         width:34px;height:34px;border-radius:50%;
         background:
           radial-gradient(circle at 30% 30%, rgba(255,255,255,.35), rgba(255,255,255,.1) 40%, transparent 60%),
-          linear-gradient(135deg, rgba(202,169,105,.55), rgba(202,169,105,.15));
-        border:1px solid rgba(202,169,105,.35);
+          linear-gradient(135deg, rgba(var(--accent),.6), rgba(var(--accent),.2));
+        border:1px solid rgba(var(--accent),.45);
         display:grid; place-items:center;
-        color:#1a1d22; font-weight:700; font-size:12px;
+        color:var(--bg-2); font-weight:700; font-size:12px;
       }
       .name h2{
         margin:0;
-        font-family:"Playfair Display",serif;
+        font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
         font-size:22px;
         line-height:1.15;
         letter-spacing:.2px;
-        color:#eef3ff;
+        color:var(--text);
       }
       .reason{
         color:var(--muted); margin:10px 0 16px; font-size:14.5px;
@@ -152,14 +155,14 @@
 
       .summary{
         margin-top:28px; padding:18px; border-radius:calc(var(--radius)+2px);
-        background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02)), var(--glass);
-        border:1px solid var(--stroke); box-shadow:var(--shadow);
+        background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)), var(--surface);
+        border:1px solid var(--outline); box-shadow:var(--shadow);
       }
       .summary h3{
         margin:0 0 10px;
-        font-family:"Playfair Display",serif;
+        font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
         font-size:18px;
-        background:linear-gradient(180deg, #fff, #dfe6f0);
+        background:linear-gradient(180deg, rgba(255,255,255,.98), rgba(255,255,255,.75));
         -webkit-background-clip:text;
         background-clip:text;
         color:transparent;
@@ -263,12 +266,24 @@
 
 <!-- 3) Auth modal (lives in main DOM so it can overlay the entire page) -->
 <style>
+  :root{
+    --brand-bg:#060a0e;
+    --brand-bg-2:#030608;
+    --brand-ink:rgba(255,255,255,.94);
+    --brand-muted:rgba(255,255,255,.68);
+    --brand-outline:rgba(255,255,255,.1);
+    --brand-surface:rgba(142,165,182,.05);
+    --brand-overlay-light:rgba(4,8,12,.3);
+    --brand-overlay:rgba(4,8,12,.5);
+    --brand-overlay-dark:rgba(4,8,12,.6);
+    --brand-accent:142,165,182;
+  }
   #auth-overlay, #auth-overlay * { box-sizing: border-box; }
   .auth-overlay{
     position:fixed; inset:0;
     display:none;
     align-items:center; justify-content:center;
-    background: rgba(8, 8, 10, 0.55);
+    background: var(--brand-overlay-dark);
     backdrop-filter: blur(12px) saturate(120%);
     -webkit-backdrop-filter: blur(12px) saturate(120%);
     z-index: 2147483647;
@@ -278,26 +293,26 @@
     width:min(92vw, 520px);
     border-radius:18px;
     padding:22px 22px 20px;
-    background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03)), #101216;
-    border:1px solid rgba(255,255,255,0.14);
-    color:#e7e9ee;
-    box-shadow: 0 30px 80px rgba(0,0,0,0.60), inset 0 1px 0 rgba(255,255,255,0.08);
-    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)), var(--brand-bg);
+    border:1px solid var(--brand-outline);
+    color:var(--brand-ink);
+    box-shadow: 0 30px 80px var(--brand-overlay-dark), inset 0 1px 0 rgba(255,255,255,0.06);
+    font-family: "Montserrat", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     max-height:min(85vh,760px);
     overflow:auto;
   }
   .auth-card h3{
     margin:0 0 6px;
-    font-family:"Cormorant Garamond",serif;
+    font-family:"Syne", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     font-weight:600;
     font-size:26px;
     letter-spacing:.2px;
-    color:#f3f5f8;
+    color:var(--brand-ink);
   }
   .auth-sub{
     margin:0 0 16px;
     font-size:13px;
-    color:#c7c9d1;
+    color:var(--brand-muted);
   }
   .auth-form{ display:grid; gap:12px; }
   .auth-row{
@@ -314,16 +329,16 @@
     font-size:12px;
     text-transform:uppercase;
     letter-spacing:.08em;
-    color:#c7c9d1;
+    color:var(--brand-muted);
   }
   .auth-input, .auth-select{
     width:100%;
     height:44px;
     padding:10px 12px;
     border-radius:12px;
-    background:#ffffff;
-    color:#111827;
-    border:1px solid rgba(0,0,0,.20);
+    background:var(--brand-overlay-light);
+    color:var(--brand-ink);
+    border:1px solid var(--brand-outline);
     outline:none;
     box-shadow:none;
     -webkit-appearance:none;
@@ -331,11 +346,11 @@
     font-size:14px;
   }
   .auth-input:hover, .auth-select:hover{
-    border-color: rgba(0,0,0,.32);
+    border-color: rgba(var(--brand-accent),0.35);
   }
   .auth-input:focus, .auth-select:focus{
-    border-color:#d4af37;
-    box-shadow:0 0 0 3px rgba(212,175,55,.25);
+    border-color: rgba(var(--brand-accent),0.6);
+    box-shadow:0 0 0 3px rgba(var(--brand-accent),0.25);
   }
   .auth-btn{
     height:48px;
@@ -343,9 +358,10 @@
     border-radius:14px;
     font-weight:700;
     letter-spacing:.02em;
-    background: linear-gradient(135deg, #d4af37, #b88a1e);
-    color:#0e0f12;
-    box-shadow:0 12px 36px rgba(212,175,55,.32);
+    background: linear-gradient(135deg, rgba(var(--brand-accent),.45), rgba(var(--brand-accent),.15));
+    border:1px solid rgba(var(--brand-accent),.45);
+    color:var(--brand-ink);
+    box-shadow:0 12px 36px var(--brand-overlay);
     font-size:70%;
     line-height:1.1;
   }
@@ -356,9 +372,9 @@
     width:34px; height:34px;
     border-radius:50%;
     display:grid; place-items:center;
-    color:#e5e7eb;
-    background: rgba(255,255,255,0.08);
-    border:1px solid rgba(255,255,255,0.16);
+    color:var(--brand-ink);
+    background: var(--brand-overlay-light);
+    border:1px solid var(--brand-outline);
     cursor:pointer;
   }
 
@@ -367,8 +383,8 @@
     display:none !important;
   }
   #auth-overlay.login #auth-submit{
-    background: linear-gradient(135deg, #1f2937, #111827);
-    color:#fff;
+    background: linear-gradient(135deg, rgba(4,8,12,.6), rgba(4,8,12,.3));
+    color:var(--brand-ink);
     box-shadow:none;
   }
 </style>

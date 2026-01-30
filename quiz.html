@@ -6,6 +6,95 @@
   const AUTO_NEXT_SKIP = new Set(["q6","q9"]);
   const DEBUG = true;
 
+  /* ===================== BRANDING ===================== */
+  function injectBranding() {
+    if (!document.head || document.getElementById("brand-theme")) return;
+
+    const link = document.createElement("link");
+    link.id = "brand-fonts";
+    link.rel = "stylesheet";
+    link.href =
+      "https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700&family=Montserrat:wght@400;500;600&display=swap";
+    document.head.appendChild(link);
+
+    const style = document.createElement("style");
+    style.id = "brand-theme";
+    style.textContent = `
+      :root{
+        --brand-bg:#060a0e;
+        --brand-bg-2:#030608;
+        --brand-ink:rgba(255,255,255,.94);
+        --brand-muted:rgba(255,255,255,.68);
+        --brand-outline:rgba(255,255,255,.1);
+        --brand-surface:rgba(142,165,182,.05);
+        --brand-overlay-light:rgba(4,8,12,.3);
+        --brand-overlay:rgba(4,8,12,.5);
+        --brand-overlay-dark:rgba(4,8,12,.6);
+        --brand-accent:142,165,182;
+      }
+      body{
+        background:
+          radial-gradient(1200px 800px at 15% -10%, rgba(var(--brand-accent),0.12), transparent 60%),
+          linear-gradient(180deg,var(--brand-bg),var(--brand-bg-2));
+        color:var(--brand-ink);
+        font-family:"Montserrat",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      }
+      h1,h2,h3,h4,h5,h6,
+      .quiz_title,.quiz_heading,.quiz_question{
+        font-family:"Syne",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      }
+      #quiz_form{
+        color:var(--brand-ink);
+      }
+      .quiz_step{
+        background:var(--brand-surface);
+        border:1px solid var(--brand-outline);
+        box-shadow:0 24px 60px var(--brand-overlay);
+      }
+      .quiz_step.active{
+        box-shadow:0 24px 60px var(--brand-overlay-dark);
+      }
+      .quiz_step .quiz_question,
+      .quiz_step h2,
+      .quiz_step h3{
+        color:var(--brand-ink);
+      }
+      input, select, textarea, button{
+        font-family:"Montserrat",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      }
+      input, select, textarea{
+        background:var(--brand-overlay-light);
+        color:var(--brand-ink);
+        border:1px solid var(--brand-outline);
+      }
+      input[type="radio"], input[type="checkbox"]{
+        accent-color: rgb(var(--brand-accent));
+      }
+      input:focus, select:focus, textarea:focus{
+        border-color:rgba(var(--brand-accent),0.6);
+        box-shadow:0 0 0 3px rgba(var(--brand-accent),0.25);
+      }
+      button, .next-btn, .prev-btn, .start-btn, .submit-btn, [data-submit="true"]{
+        background:linear-gradient(135deg, rgba(var(--brand-accent),0.45), rgba(var(--brand-accent),0.15));
+        border:1px solid rgba(var(--brand-accent),0.45);
+        color:var(--brand-ink);
+      }
+      button:hover, .next-btn:hover, .prev-btn:hover, .start-btn:hover, .submit-btn:hover, [data-submit="true"]:hover{
+        filter:brightness(1.05);
+      }
+      #quiz_progress-bar{
+        background:linear-gradient(90deg, rgba(var(--brand-accent),0.55), rgba(var(--brand-accent),0.25));
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", injectBranding);
+  } else {
+    injectBranding();
+  }
+
   /* ===================== HELPERS ===================== */
   const log = (...a) => DEBUG && console.log("[quiz]", ...a);
 
@@ -84,6 +173,7 @@
 
   /* ===================== STEPPER ===================== */
   document.addEventListener('DOMContentLoaded', () => {
+    injectBranding();
     const formRoot = document.getElementById('quiz_form');
     if (!formRoot) { console.error('[quiz] #quiz_form not found'); return; }
 
