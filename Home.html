@@ -1,0 +1,236 @@
+<div id="car-chatbot-root"></div>
+
+<script>
+  (function () {
+    const root = document.getElementById("car-chatbot-root");
+    const CAR_CHAT_URL =
+      "https://carbackendd.netlify.app/.netlify/functions/car-chat";
+
+    root.innerHTML = `
+      <style>
+        .car-bot-launcher {
+          position: fixed;
+          bottom: 20px;
+          right: 20px;
+          width: 56px;
+          height: 56px;
+          border-radius: 999px;
+          border: none;
+          cursor: pointer;
+          font-size: 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+          background: #111827;
+          color: #f9fafb;
+          z-index: 9999;
+        }
+        .car-bot-window {
+          position: fixed;
+          bottom: 90px;
+          right: 20px;
+          width: 320px;
+          max-height: 480px;
+          background: #111827;
+          color: #f9fafb;
+          border-radius: 16px;
+          box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+          display: none;
+          flex-direction: column;
+          overflow: hidden;
+          z-index: 9999;
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+        }
+        .car-bot-header {
+          padding: 10px 14px;
+          background: #1f2937;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-size: 14px;
+        }
+        .car-bot-header-title {
+          font-weight: 600;
+        }
+        .car-bot-header-sub {
+          font-size: 11px;
+          color: #9ca3af;
+        }
+        .car-bot-close {
+          cursor: pointer;
+          font-size: 18px;
+        }
+        .car-bot-messages {
+          padding: 10px;
+          flex: 1;
+          overflow-y: auto;
+          font-size: 13px;
+          background: #020617;
+        }
+        .car-bot-message {
+          margin-bottom: 8px;
+          max-width: 85%;
+          line-height: 1.4;
+          border-radius: 12px;
+          padding: 6px 9px;
+        }
+        .car-bot-message.bot {
+          background: #1f2937;
+          border-bottom-left-radius: 2px;
+        }
+        .car-bot-message.user {
+          background: #2563eb;
+          border-bottom-right-radius: 2px;
+          margin-left: auto;
+          text-align: right;
+        }
+        .car-bot-input-row {
+          display: flex;
+          padding: 8px;
+          border-top: 1px solid #1f2937;
+          background: #020617;
+        }
+        .car-bot-input-row input {
+          flex: 1;
+          border-radius: 999px;
+          border: 1px solid #374151;
+          padding: 6px 10px;
+          font-size: 13px;
+          background: #020617;
+          color: #e5e7eb;
+          outline: none;
+        }
+        .car-bot-input-row button {
+          margin-left: 6px;
+          border-radius: 999px;
+          border: none;
+          padding: 6px 10px;
+          font-size: 13px;
+          cursor: pointer;
+          background: #2563eb;
+          color: #f9fafb;
+        }
+        .car-bot-input-row button:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
+      </style>
+
+      <button class="car-bot-launcher" aria-label="Car assistant chat">
+        🚗
+      </button>
+
+      <div class="car-bot-window">
+        <div class="car-bot-header">
+          <div>
+            <div class="car-bot-header-title">Car Advisor</div>
+            <div class="car-bot-header-sub">Ask me which car fits you</div>
+          </div>
+          <div class="car-bot-close">&times;</div>
+        </div>
+        <div class="car-bot-messages"></div>
+        <form class="car-bot-input-row">
+          <input type="text" placeholder="Type your question..." />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    `;
+
+    const launcher = root.querySelector(".car-bot-launcher");
+    const windowEl = root.querySelector(".car-bot-window");
+    const closeEl = root.querySelector(".car-bot-close");
+    const messagesEl = root.querySelector(".car-bot-messages");
+    const form = root.querySelector(".car-bot-input-row");
+    const input = form.querySelector("input");
+    const sendBtn = form.querySelector("button");
+
+    // ✅ extra launcher button in your page
+    const externalLauncher = document.getElementById("bt-chat");
+
+    let history = [];
+
+    function addMessage(text, role) {
+      const el = document.createElement("div");
+      el.className = "car-bot-message " + (role === "user" ? "user" : "bot");
+      el.textContent = text;
+      messagesEl.appendChild(el);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function toggleChatWindow() {
+      windowEl.style.display =
+        windowEl.style.display === "flex" ? "none" : "flex";
+    }
+
+    async function sendMessage(text) {
+      if (!text.trim()) return;
+
+      addMessage(text, "user");
+      input.value = "";
+      sendBtn.disabled = true;
+
+      try {
+        const res = await fetch(CAR_CHAT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text, history }),
+        });
+
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          const raw = await res.text();
+          console.error("Non-JSON response:", raw);
+          addMessage("Server error: " + raw, "bot");
+          return;
+        }
+
+        if (!res.ok) {
+          console.error("Server error:", data);
+          addMessage(
+            "Server error: " + (data.details || data.error || res.status),
+            "bot"
+          );
+          return;
+        }
+
+        const reply = data.reply || "Sorry, I couldn't answer that.";
+        addMessage(reply, "bot");
+
+        history.push({ role: "user", content: text });
+        history.push({ role: "assistant", content: reply });
+      } catch (err) {
+        console.error("Chat error:", err);
+        addMessage("Error talking to the car advisor. Please try again.", "bot");
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
+    // Initial welcome message
+    addMessage(
+      "Hey 👋 I’m your car advisor. Tell me your budget and how you’ll use the car (city, long trips, family, etc.), and I’ll help you pick.",
+      "bot"
+    );
+
+    // Launchers
+    launcher.addEventListener("click", toggleChatWindow);
+
+    if (externalLauncher) {
+      externalLauncher.addEventListener("click", toggleChatWindow);
+    }
+
+    // Close button
+    closeEl.addEventListener("click", () => {
+      windowEl.style.display = "none";
+    });
+
+    // Send form
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      sendMessage(input.value);
+    });
+  })();
+</script>
