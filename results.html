@@ -1,0 +1,674 @@
+<!-- ========== RESULTS PAGE (FINAL) ========== -->
+
+<!-- 1) Supabase bootstrap (must load before any auth logic) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  // Your Supabase project keys
+  const SUPABASE_URL  = "https://zrlfkdxpqkhfusjktrey.supabase.co";
+  const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpybGZrZHhwcWtoZnVzamt0cmV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk4NDc1MzYsImV4cCI6MjA3NTQyMzUzNn0.FG3eMKO7KRJ_GM4XXo5DEIDlWU7j9tjMJRJwpotNd6Y";
+
+  // Single shared Supabase client
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+  // expose globally so later scripts can use `sb`
+  window.sb = sb;
+</script>
+
+<!-- 2) Results container -->
+<div id="car-results-luxe"></div>
+
+<script>
+(() => {
+  const host = document.getElementById("car-results-luxe");
+  if (!host) return;
+
+  // restore quiz data from sessionStorage
+  function safeJSON(str){ try { return JSON.parse(str || "null"); } catch { return null; } }
+  const picks   = safeJSON(sessionStorage.getItem("carPicks"))   || [];
+  const answers = safeJSON(sessionStorage.getItem("carAnswers")) || {};
+
+  // helpers for rendering
+  function esc(s){
+    return String(s).replace(/[&<>"']/g, m => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[m]));
+  }
+  function initials(brand){
+    const parts = String(brand).trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return brand.slice(0,2).toUpperCase();
+  }
+
+  // shadow root for the fancy layout
+  const shadow = host.attachShadow({ mode: "open" });
+  const html = String.raw;
+
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html`
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+
+      :host { all: initial; }
+      .root{
+        --bg:#0b0c0f; --bg-2:#0f1116; --text:#f5f7fa; --muted:#a9b0bc;
+        --gold:#caa969; --gold-2:#edddbe; --glass:rgba(255,255,255,.06);
+        --stroke:rgba(255,255,255,.08); --ring:rgba(202,169,105,.25);
+        --shadow:0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04);
+        --radius:18px;
+        font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+        color:var(--text);
+        background:var(--bg);
+        position:relative; isolation:isolate;
+        padding:min(7vh,56px) 20px 80px;
+      }
+      .root::before{
+        content:""; position:absolute; inset:0;
+        background:
+          radial-gradient(900px 600px at 15% -10%, rgba(202,169,105,.18), transparent 60%),
+          radial-gradient(1000px 700px at 85% -10%, rgba(120,167,255,.12), transparent 55%),
+          linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 100%);
+        z-index:-1;
+      }
+      .wrap{ max-width:1200px; margin:0 auto; }
+      .kicker{
+        letter-spacing:.22em; text-transform:uppercase; color:var(--gold-2);
+        font-size:12px; font-weight:600; opacity:.9;
+      }
+      .title{
+        font-family:"Playfair Display",serif; font-weight:700; line-height:1.12;
+        font-size:clamp(28px,4.2vw,46px); margin:.15em 0 .35em;
+        background:linear-gradient(180deg,#fff 0%,#e8ebf0 60%,#cdd6e3 100%);
+        -webkit-background-clip:text; background-clip:text; color:transparent;
+      }
+      .sub{
+        color:var(--muted); max-width:70ch; font-size:15.5px; margin:0 0 18px;
+      }
+
+      .actions{
+        display:flex; gap:10px; flex-wrap:wrap; margin:6px 0 22px;
+      }
+      .btn{
+        position:relative; appearance:none; border:0; border-radius:999px;
+        padding:10px 14px;
+        font-weight:600; font-size:13px; letter-spacing:.02em; color:var(--text);
+        background:linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,0));
+        transition: filter .25s ease, transform .2s ease, box-shadow .2s ease;
+        outline:none; overflow:hidden; cursor:pointer; text-decoration:none;
+      }
+      .btn::before{
+        content:""; position:absolute; inset:0; border-radius:inherit; padding:1px;
+        background:linear-gradient(90deg, rgba(202,169,105,.55), rgba(202,169,105,.15));
+        -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+        -webkit-mask-composite:xor; mask-composite:exclude;
+        pointer-events:none;
+      }
+      .btn:hover{
+        transform:translateY(-1px); filter:brightness(1.06);
+      }
+      .btn.primary{
+        background:linear-gradient(135deg, #d4af37, #b88a1e);
+        color:#0e0f12;
+      }
+
+      .grid{
+        display:grid; gap:18px; grid-template-columns:1fr;
+      }
+      @media (min-width:880px){
+        .grid{ grid-template-columns:repeat(3,1fr); }
+      }
+
+      .card{
+        position:relative; border-radius:var(--radius); padding:22px 20px 18px;
+        background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02)), var(--glass);
+        border:1px solid var(--stroke);
+        box-shadow:var(--shadow);
+        overflow:hidden;
+      }
+      .rank{
+        font-size:12px; color:var(--gold-2); letter-spacing:.16em;
+        text-transform:uppercase; margin-bottom:6px;
+      }
+      .name{ display:flex; align-items:center; gap:10px; }
+      .badge{
+        width:34px;height:34px;border-radius:50%;
+        background:
+          radial-gradient(circle at 30% 30%, rgba(255,255,255,.35), rgba(255,255,255,.1) 40%, transparent 60%),
+          linear-gradient(135deg, rgba(202,169,105,.55), rgba(202,169,105,.15));
+        border:1px solid rgba(202,169,105,.35);
+        display:grid; place-items:center;
+        color:#1a1d22; font-weight:700; font-size:12px;
+      }
+      .name h2{
+        margin:0;
+        font-family:"Playfair Display",serif;
+        font-size:22px;
+        line-height:1.15;
+        letter-spacing:.2px;
+        color:#eef3ff;
+      }
+      .reason{
+        color:var(--muted); margin:10px 0 16px; font-size:14.5px;
+      }
+
+      .summary{
+        margin-top:28px; padding:18px; border-radius:calc(var(--radius)+2px);
+        background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02)), var(--glass);
+        border:1px solid var(--stroke); box-shadow:var(--shadow);
+      }
+      .summary h3{
+        margin:0 0 10px;
+        font-family:"Playfair Display",serif;
+        font-size:18px;
+        background:linear-gradient(180deg, #fff, #dfe6f0);
+        -webkit-background-clip:text;
+        background-clip:text;
+        color:transparent;
+      }
+      .dl{
+        display:grid;
+        grid-template-columns:180px 1fr;
+        gap:8px 16px;
+        margin:0;
+      }
+      .dl dt{ color:var(--muted); }
+      .dl dd{ margin:0; color:var(--text); }
+      @media (max-width:640px){
+        .dl{ grid-template-columns:1fr; }
+      }
+    </style>
+
+    <section class="root">
+      <div class="wrap">
+        <div class="kicker">Curated for you</div>
+        <h1 class="title">Your Top Car Matches</h1>
+        <p class="sub">Hand-picked based on your preferences. Refined, reliable, and ready to turn heads.</p>
+
+        <div class="actions">
+          <button id="saveBtn" class="btn primary">Save my results</button>
+          <a class="btn" href="/quiz-page-en">Retake quiz</a>
+        </div>
+
+        <div id="grid" class="grid" role="list"></div>
+
+        <div id="summary" class="summary" hidden>
+          <h3>Your selections</h3>
+          <dl class="dl" id="dl"></dl>
+        </div>
+      </div>
+    </section>
+  `;
+  shadow.appendChild(tpl.content.cloneNode(true));
+
+  // render car cards
+  const grid = shadow.getElementById("grid");
+  if (Array.isArray(picks) && picks.length) {
+    grid.innerHTML = picks.slice(0,3).map((p, i) => {
+      const brand  = esc(p.brand || "Brand");
+      const model  = esc(p.model || "");
+      const reason = esc(p.reason || "");
+      const badge  = initials(brand);
+      return `
+        <article class="card" role="listitem" aria-label="${brand} ${model}">
+          <div class="rank">#${i+1} match</div>
+          <div class="name">
+            <div class="badge" aria-hidden="true">${badge}</div>
+            <h2>${brand} ${model}</h2>
+          </div>
+          <p class="reason">${reason}</p>
+        </article>
+      `;
+    }).join("");
+  } else {
+    grid.innerHTML = `
+      <article class="card" role="listitem" style="grid-column: 1/-1; text-align:center; padding:32px;">
+        <h2>No results</h2>
+        <p class="reason">Please return to the quiz and try again.</p>
+        <div><a class="btn" href="/quiz-page-en">Retake Quiz</a></div>
+      </article>
+    `;
+  }
+
+  // summary (answers list)
+  const LABELS = {
+    q1_bodyType:     "Preferred body type",
+    q2_budget:       "Budget",
+    q3_fuel:         "Fuel type",
+    q4_usage:        "Primary use",
+    q5_range:        "Range need",
+    q6_features:     "Must-have features",
+    q7_chargeTime:   "Charging patience",
+    q8_dailyDistance:"Daily distance",
+    q9_brands:       "Brand preferences",
+    q10_color:       "Color preference",
+  };
+
+  const entries = Object.entries(answers || {}).filter(([k]) => k !== "_meta");
+  if (entries.length) {
+    const dl = shadow.getElementById("dl");
+    dl.innerHTML = entries.map(([k, v]) => {
+      const label = esc(LABELS[k] || k);
+      const val   = Array.isArray(v) ? v.join(", ") : String(v);
+      return `<dt>${label}</dt><dd>${esc(val)}</dd>`;
+    }).join("");
+    shadow.getElementById("summary").hidden = false;
+  }
+
+  // "Save my results" button opens auth modal
+  shadow.getElementById("saveBtn")?.addEventListener("click", () => {
+    openAuthModal('signup');
+  });
+
+})();
+</script>
+
+<!-- 3) Auth modal (lives in main DOM so it can overlay the entire page) -->
+<style>
+  #auth-overlay, #auth-overlay * { box-sizing: border-box; }
+  .auth-overlay{
+    position:fixed; inset:0;
+    display:none;
+    align-items:center; justify-content:center;
+    background: rgba(8, 8, 10, 0.55);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    z-index: 2147483647;
+  }
+  .auth-overlay.is-open{ display:flex; }
+  .auth-card{
+    width:min(92vw, 520px);
+    border-radius:18px;
+    padding:22px 22px 20px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03)), #101216;
+    border:1px solid rgba(255,255,255,0.14);
+    color:#e7e9ee;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.60), inset 0 1px 0 rgba(255,255,255,0.08);
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    max-height:min(85vh,760px);
+    overflow:auto;
+  }
+  .auth-card h3{
+    margin:0 0 6px;
+    font-family:"Cormorant Garamond",serif;
+    font-weight:600;
+    font-size:26px;
+    letter-spacing:.2px;
+    color:#f3f5f8;
+  }
+  .auth-sub{
+    margin:0 0 16px;
+    font-size:13px;
+    color:#c7c9d1;
+  }
+  .auth-form{ display:grid; gap:12px; }
+  .auth-row{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:12px;
+  }
+  @media (max-width:560px){
+    .auth-row{ grid-template-columns:1fr; }
+  }
+  .auth-label{
+    display:block;
+    margin:0 0 6px;
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:.08em;
+    color:#c7c9d1;
+  }
+  .auth-input, .auth-select{
+    width:100%;
+    height:44px;
+    padding:10px 12px;
+    border-radius:12px;
+    background:#ffffff;
+    color:#111827;
+    border:1px solid rgba(0,0,0,.20);
+    outline:none;
+    box-shadow:none;
+    -webkit-appearance:none;
+    appearance:none;
+    font-size:14px;
+  }
+  .auth-input:hover, .auth-select:hover{
+    border-color: rgba(0,0,0,.32);
+  }
+  .auth-input:focus, .auth-select:focus{
+    border-color:#d4af37;
+    box-shadow:0 0 0 3px rgba(212,175,55,.25);
+  }
+  .auth-btn{
+    height:48px;
+    margin-top:6px;
+    border-radius:14px;
+    font-weight:700;
+    letter-spacing:.02em;
+    background: linear-gradient(135deg, #d4af37, #b88a1e);
+    color:#0e0f12;
+    box-shadow:0 12px 36px rgba(212,175,55,.32);
+    font-size:70%;
+    line-height:1.1;
+  }
+
+  .auth-close{
+    position:absolute;
+    top:10px; right:10px;
+    width:34px; height:34px;
+    border-radius:50%;
+    display:grid; place-items:center;
+    color:#e5e7eb;
+    background: rgba(255,255,255,0.08);
+    border:1px solid rgba(255,255,255,0.16);
+    cursor:pointer;
+  }
+
+  /* login mode hides profile fields + changes button color */
+  #auth-overlay.login .auth-extra{
+    display:none !important;
+  }
+  #auth-overlay.login #auth-submit{
+    background: linear-gradient(135deg, #1f2937, #111827);
+    color:#fff;
+    box-shadow:none;
+  }
+</style>
+
+<div id="auth-overlay" class="auth-overlay" aria-hidden="true">
+  <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <button type="button" class="auth-close" id="auth-close" aria-label="Close">✕</button>
+
+    <h3 id="auth-title">Create account to save your matches</h3>
+    <p id="auth-sub" class="auth-sub">We’ll save your results to your dashboard.</p>
+
+    <form id="auth-form" class="auth-form" autocomplete="on">
+      <div>
+        <label class="auth-label" for="auth_email">Email</label>
+        <input class="auth-input" type="email" id="auth_email" placeholder="you@email.com" required>
+      </div>
+
+      <div>
+        <label class="auth-label" for="auth_password">Password</label>
+        <input class="auth-input" type="password" id="auth_password" placeholder="••••••••" required>
+      </div>
+
+      <div class="auth-extra">
+        <div>
+          <label class="auth-label" for="auth_name">Full name</label>
+          <input class="auth-input" type="text" id="auth_name" placeholder="John Smith" required>
+        </div>
+        <div>
+          <label class="auth-label" for="auth_nickname">First name / Nickname</label>
+          <input class="auth-input" type="text" id="auth_nickname" placeholder="John" required>
+        </div>
+
+        <div class="auth-row">
+          <div>
+            <label class="auth-label" for="auth_dob">Date of birth</label>
+            <input class="auth-input" type="date" id="auth_dob" required>
+          </div>
+          <div>
+            <label class="auth-label" for="auth_gender">Gender</label>
+            <select class="auth-select" id="auth_gender" required>
+              <option value="">Select…</option>
+              <option>Female</option>
+              <option>Male</option>
+              <option>Non-binary</option>
+              <option>Prefer not to say</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="auth-row">
+          <div>
+            <label class="auth-label" for="auth_country">Country</label>
+            <input class="auth-input" type="text" id="auth_country" placeholder="United States" required>
+          </div>
+          <div>
+            <label class="auth-label" for="auth_state">State/Region</label>
+            <input class="auth-input" type="text" id="auth_state" placeholder="California">
+          </div>
+        </div>
+      </div>
+
+      <button type="submit" id="auth-submit" class="auth-btn">Create account</button>
+
+      <div style="margin-top:6px; font-size:12px;">
+        <a href="#" id="auth-forgot" style="color:#e7e9ee; text-decoration:underline; display:none;">Forgot password?</a>
+      </div>
+
+      <div id="auth-msg" style="margin-top:8px; font-size:12px; color:#c7c9d1; min-height:16px;"></div>
+    </form>
+  </div>
+</div>
+
+<script>
+/* ---------- modal open/close + mode switch ---------- */
+function setAuthMode(mode) {
+  const overlay = document.getElementById('auth-overlay');
+  const title   = document.getElementById('auth-title');
+  const sub     = document.getElementById('auth-sub');
+  const btn     = document.getElementById('auth-submit');
+  const forgot  = document.getElementById('auth-forgot');
+
+  overlay.classList.remove('login','signup');
+  overlay.classList.add(mode === 'login' ? 'login' : 'signup');
+
+  if (mode === 'login') {
+    title.textContent = "Log in to save your matches";
+    sub.textContent   = "Welcome back — enter your password to continue.";
+    btn.textContent   = "Log in";
+    forgot.style.display = 'inline';
+  } else {
+    title.textContent = "Create account to save your matches";
+    sub.textContent   = "We’ll save your results to your dashboard.";
+    btn.textContent   = "Create account";
+    forgot.style.display = 'none';
+  }
+  document.getElementById('auth-msg').textContent = "";
+}
+
+function openAuthModal(defaultMode='signup'){
+  setAuthMode(defaultMode);
+  const overlay = document.getElementById('auth-overlay');
+  overlay.classList.add('is-open');
+  overlay.setAttribute('aria-hidden', 'false');
+}
+
+function closeAuthModal(){
+  const overlay = document.getElementById('auth-overlay');
+  overlay.classList.remove('is-open');
+  overlay.setAttribute('aria-hidden','true');
+}
+
+document.getElementById('auth-close')?.addEventListener('click', closeAuthModal);
+document.addEventListener('keydown', (e)=>{
+  if (e.key==='Escape' && document.getElementById('auth-overlay')?.classList.contains('is-open')) {
+    closeAuthModal();
+  }
+});
+document.getElementById('auth-overlay')?.addEventListener('click', (e)=>{
+  if(e.target===e.currentTarget) closeAuthModal();
+});
+
+/* ---------- helpers for API ---------- */
+async function postJson(url, payload, token) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type":"application/json",
+      ...(token ? { "Authorization": `Bearer ${token}` } : {})
+    },
+    body: JSON.stringify(payload),
+    mode:"cors",
+    credentials:"omit"
+  });
+
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+
+  if (!res.ok) {
+    throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  }
+  return data;
+}
+
+/* ---------- signup / login / save ---------- */
+async function handleAuthAndSave(profile, answers, top3) {
+  const {
+    email,
+    password,
+    name,
+    nickname,
+    dob,
+    gender,
+    country,
+    state
+  } = profile;
+
+  const msg     = document.getElementById('auth-msg');
+  const btn     = document.getElementById('auth-submit');
+  const overlay = document.getElementById('auth-overlay');
+  const mode    = overlay.classList.contains('login') ? 'login' : 'signup';
+
+  const setMsg = (t) => { msg.textContent = t; };
+
+  try {
+    btn.disabled = true;
+
+    // 1. Auth step
+    if (mode === 'login') {
+      setMsg("Signing you in…");
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) {
+        const m = (error.message || '').toLowerCase();
+        if (m.includes('invalid') || m.includes('password')) {
+          setMsg("Incorrect password. Try again or reset it.");
+          document.getElementById('auth-forgot').style.display = 'inline';
+          btn.disabled = false;
+          return;
+        }
+        if (m.includes('email not confirmed')) {
+          setMsg("Please confirm your email, then log in.");
+          btn.disabled = false;
+          return;
+        }
+        throw error;
+      }
+    } else {
+      setMsg("Creating your account…");
+      const { error } = await sb.auth.signUp({ email, password });
+      if (error) {
+        const m = (error.message || '').toLowerCase();
+        if (m.includes('already') || m.includes('exists')) {
+          // Switch to login mode if the email is already in use
+          setAuthMode('login');
+          setMsg("This email is already registered. Please log in.");
+          document.getElementById('auth-forgot').style.display = 'inline';
+          btn.disabled = false;
+          return;
+        }
+        throw error;
+      }
+
+      // If email confirmation is required, user might not be "logged in" yet
+      const afterSignup = await sb.auth.getSession();
+      const tokenAfter  = afterSignup?.data?.session?.access_token;
+      if (!tokenAfter) {
+        setMsg("Check your email to confirm your account, then log in.");
+        btn.disabled = false;
+        return;
+      }
+    }
+
+    // 2. get session/access token
+    const sess  = await sb.auth.getSession();
+    const token = sess?.data?.session?.access_token;
+    if (!token) {
+      setMsg("No session. Please log in again.");
+      btn.disabled = false;
+      return;
+    }
+
+    // 3. Save EVERYTHING in one request to profileUpsertCORS
+    //    This creates/updates the profile AND stores the quiz result in `results`
+    setMsg("Saving your data…");
+    await postJson(
+      "https://carbackendd.netlify.app/.netlify/functions/profileUpsertCORS",
+      {
+        email,
+        name,
+        nickname,
+        dob,
+        gender,
+        country,
+        state,
+        answers, // quiz answers
+        top3     // top 3 cars
+      },
+      token
+    );
+
+    // 4. success -> dashboard
+    setMsg("Saved! You can now visit your dashboard.");
+    setTimeout(()=>{
+      closeAuthModal();
+      window.location.href = "/dashboard";
+    }, 800);
+
+  } catch (e) {
+    console.error(e);
+    msg.textContent = e.message || String(e);
+    btn.disabled = false;
+  }
+}
+
+/* ---------- bind modal form submit ---------- */
+document.getElementById('auth-form')?.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+
+  const answers = JSON.parse(sessionStorage.getItem("carAnswers") || "null");
+  const top3    = JSON.parse(sessionStorage.getItem("carPicks")   || "null");
+
+  if (!answers || !top3) {
+    document.getElementById('auth-msg').textContent =
+      "No results to save. Retake the quiz.";
+    return;
+  }
+
+  const profile = {
+    email:     document.getElementById('auth_email')?.value.trim(),
+    password:  document.getElementById('auth_password')?.value,
+    name:      document.getElementById('auth_name')?.value?.trim(),
+    nickname:  document.getElementById('auth_nickname')?.value?.trim(),
+    dob:       document.getElementById('auth_dob')?.value,
+    gender:    document.getElementById('auth_gender')?.value,
+    country:   document.getElementById('auth_country')?.value?.trim(),
+    state:     document.getElementById('auth_state')?.value?.trim()
+  };
+
+  await handleAuthAndSave(profile, answers, top3);
+});
+
+/* ---------- forgot password ---------- */
+document.getElementById('auth-forgot')?.addEventListener('click', async (e)=>{
+  e.preventDefault();
+  const email = document.getElementById('auth_email')?.value.trim();
+  const msg   = document.getElementById('auth-msg');
+  if (!email) {
+    msg.textContent = "Enter your email first.";
+    return;
+  }
+  try {
+    msg.textContent = "Sending reset link…";
+    const { error } = await sb.auth.resetPasswordForEmail(email, {
+      redirectTo: location.origin + "/reset-done"
+    });
+    if (error) throw error;
+    msg.textContent = "Reset link sent. Check your email.";
+  } catch (err) {
+    console.error(err);
+    msg.textContent = (err.message || "Could not send reset link.");
+  }
+});
+</script>
