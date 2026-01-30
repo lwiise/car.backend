@@ -21,6 +21,8 @@
 (() => {
   const host = document.getElementById("car-results-luxe");
   if (!host) return;
+  const CAR_IMAGE_URL = "https://carbackendd.netlify.app/.netlify/functions/carImageCORS";
+  const aiImageCache = new Map();
 
   // restore quiz data from sessionStorage
   function safeJSON(str){ try { return JSON.parse(str || "null"); } catch { return null; } }
@@ -37,6 +39,63 @@
     const parts = String(brand).trim().split(/\s+/);
     if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
     return brand.slice(0,2).toUpperCase();
+  }
+  function encodeAttr(val){
+    return encodeURIComponent(String(val ?? ""));
+  }
+  function decodeAttr(val){
+    try { return decodeURIComponent(String(val ?? "")); } catch { return String(val ?? ""); }
+  }
+  function svgCardImage(title, subtitle){
+    const safeTitle = String(title || "Car").replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 28);
+    const safeSub = String(subtitle || "").replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 36);
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="900" height="540" viewBox="0 0 900 540">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="rgba(142,165,182,0.35)"/>
+            <stop offset="100%" stop-color="rgba(4,8,12,0.85)"/>
+          </linearGradient>
+          <radialGradient id="g2" cx="0.2" cy="0.0" r="0.9">
+            <stop offset="0%" stop-color="rgba(142,165,182,0.35)"/>
+            <stop offset="70%" stop-color="rgba(3,6,8,0.15)"/>
+            <stop offset="100%" stop-color="rgba(3,6,8,0.0)"/>
+          </radialGradient>
+        </defs>
+        <rect width="900" height="540" fill="url(#g1)"/>
+        <rect width="900" height="540" fill="url(#g2)"/>
+        <rect x="28" y="28" width="844" height="484" rx="22" ry="22" fill="rgba(3,6,8,0.35)" stroke="rgba(255,255,255,0.12)"/>
+        <text x="64" y="250" fill="rgba(255,255,255,0.92)" font-size="44" font-family="Montserrat, Arial, sans-serif" font-weight="700">${safeTitle}</text>
+        <text x="64" y="300" fill="rgba(255,255,255,0.65)" font-size="22" font-family="Montserrat, Arial, sans-serif">${safeSub}</text>
+      </svg>
+    `;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  }
+  function cardImagePlaceholder(p){
+    const title = `${p?.brand ?? ""} ${p?.model ?? ""}`.trim() || "Car";
+    return svgCardImage(title, "Recommended match");
+  }
+  async function fetchAiImage(brand, model){
+    const key = `${brand || ""} ${model || ""}`.trim().toLowerCase();
+    if (!key) return null;
+    if (aiImageCache.has(key)) return aiImageCache.get(key);
+    const req = fetch(CAR_IMAGE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brand, model })
+    })
+      .then(r => r.json())
+      .then(d => d?.url || null)
+      .catch(() => null);
+    aiImageCache.set(key, req);
+    return req;
+  }
+  function hydrateAiImage(imgEl, brand, model){
+    if (!imgEl || imgEl.dataset.aiLoaded === "1") return;
+    imgEl.dataset.aiLoaded = "1";
+    fetchAiImage(brand, model).then(url => {
+      if (url) imgEl.src = url;
+    });
   }
 
   // shadow root for the fancy layout
@@ -127,6 +186,17 @@
         box-shadow:var(--shadow);
         overflow:hidden;
       }
+      .card-media{
+        margin:-22px -20px 14px;
+        border-bottom:1px solid var(--outline);
+        background:var(--bg-2);
+      }
+      .card-img{
+        width:100%;
+        height:190px;
+        display:block;
+        object-fit:cover;
+      }
       .rank{
         font-size:12px; color:rgba(var(--accent),.85); letter-spacing:.16em;
         text-transform:uppercase; margin-bottom:6px;
@@ -206,12 +276,18 @@
   const grid = shadow.getElementById("grid");
   if (Array.isArray(picks) && picks.length) {
     grid.innerHTML = picks.slice(0,3).map((p, i) => {
-      const brand  = esc(p.brand || "Brand");
-      const model  = esc(p.model || "");
+      const brandRaw = p.brand || "Brand";
+      const modelRaw = p.model || "";
+      const brand  = esc(brandRaw);
+      const model  = esc(modelRaw);
       const reason = esc(p.reason || "");
-      const badge  = initials(brand);
+      const badge  = initials(brandRaw);
+      const imgUrl = cardImagePlaceholder(p);
       return `
-        <article class="card" role="listitem" aria-label="${brand} ${model}">
+        <article class="card" role="listitem" aria-label="${brand} ${model}" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
+          <div class="card-media">
+            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1">
+          </div>
           <div class="rank">#${i+1} match</div>
           <div class="name">
             <div class="badge" aria-hidden="true">${badge}</div>
@@ -224,12 +300,22 @@
   } else {
     grid.innerHTML = `
       <article class="card" role="listitem" style="grid-column: 1/-1; text-align:center; padding:32px;">
+        <div class="card-media">
+          <img class="card-img" src="${svgCardImage("No results", "Take the quiz to see matches")}" alt="No results">
+        </div>
         <h2>No results</h2>
         <p class="reason">Please return to the quiz and try again.</p>
         <div><a class="btn" href="/quiz-page-en">Retake Quiz</a></div>
       </article>
     `;
   }
+  // hydrate AI images for results
+  grid.querySelectorAll('img[data-ai="1"]').forEach(img => {
+    const card = img.closest(".card");
+    const brand = decodeAttr(card?.getAttribute("data-brand"));
+    const model = decodeAttr(card?.getAttribute("data-model"));
+    hydrateAiImage(img, brand, model);
+  });
 
   // summary (answers list)
   const LABELS = {

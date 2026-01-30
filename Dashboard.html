@@ -13,6 +13,7 @@
   // Netlify base + CORS-wrapped endpoints
   const NETLIFY_BASE     = "https://carbackendd.netlify.app/.netlify/functions";
   const RESULTS_LIST_URL = `${NETLIFY_BASE}/resultsListCORS`;
+  const CAR_IMAGE_URL    = `${NETLIFY_BASE}/carImageCORS`;
 </script>
 
 <style>
@@ -369,6 +370,69 @@
   const email = user.email || sessionStorage.getItem('sbEmail') || '';
 
   // ========= helpers =========
+  const aiImageCache = new Map();
+  function encodeAttr(val){
+    return encodeURIComponent(String(val ?? ""));
+  }
+  function decodeAttr(val){
+    try { return decodeURIComponent(String(val ?? "")); } catch { return String(val ?? ""); }
+  }
+  function svgCardImage(title, subtitle){
+    const safeTitle = String(title || "Car").replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 28);
+    const safeSub = String(subtitle || "").replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 36);
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="900" height="540" viewBox="0 0 900 540">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="rgba(142,165,182,0.35)"/>
+            <stop offset="100%" stop-color="rgba(4,8,12,0.85)"/>
+          </linearGradient>
+          <radialGradient id="g2" cx="0.2" cy="0.0" r="0.9">
+            <stop offset="0%" stop-color="rgba(142,165,182,0.35)"/>
+            <stop offset="70%" stop-color="rgba(3,6,8,0.15)"/>
+            <stop offset="100%" stop-color="rgba(3,6,8,0.0)"/>
+          </radialGradient>
+        </defs>
+        <rect width="900" height="540" fill="url(#g1)"/>
+        <rect width="900" height="540" fill="url(#g2)"/>
+        <rect x="28" y="28" width="844" height="484" rx="22" ry="22" fill="rgba(3,6,8,0.35)" stroke="rgba(255,255,255,0.12)"/>
+        <text x="64" y="250" fill="rgba(255,255,255,0.92)" font-size="44" font-family="Montserrat, Arial, sans-serif" font-weight="700">${safeTitle}</text>
+        <text x="64" y="300" fill="rgba(255,255,255,0.65)" font-size="22" font-family="Montserrat, Arial, sans-serif">${safeSub}</text>
+      </svg>
+    `;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  }
+  function cardImagePlaceholder(c){
+    const title = `${c?.brand ?? ''} ${c?.model ?? ''}`.trim() || 'Car';
+    return svgCardImage(title, "Recommended match");
+  }
+  async function fetchAiImage(brand, model){
+    const key = `${brand || ""} ${model || ""}`.trim().toLowerCase();
+    if (!key) return null;
+    if (aiImageCache.has(key)) return aiImageCache.get(key);
+    const req = fetch(CAR_IMAGE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brand, model })
+    })
+      .then(r => r.json())
+      .then(d => d?.url || null)
+      .catch(() => null);
+    aiImageCache.set(key, req);
+    return req;
+  }
+  function hydrateAiImages(scope){
+    const root = scope || document;
+    root.querySelectorAll('img[data-ai="1"]').forEach(img => {
+      if (img.dataset.aiLoaded === "1") return;
+      const brand = decodeAttr(img.getAttribute("data-brand"));
+      const model = decodeAttr(img.getAttribute("data-model"));
+      img.dataset.aiLoaded = "1";
+      fetchAiImage(brand, model).then(url => {
+        if (url) img.src = url;
+      });
+    });
+  }
   function shortSummary(r){
     const arr=Array.isArray(r.top3)?r.top3:[];
     return arr.slice(0,3)
@@ -385,16 +449,12 @@
       <div class="grid" id="latest-grid">
         ${top3.slice(0,3).map((c,i)=>{
           const title=`${c.brand??''} ${c.model??''}`.trim();
-          const img=c.image||'';
+          const img=cardImagePlaceholder(c);
           const reason=c.reason??'';
           return `
             <article class="card">
               <span class="badge">#${i+1}</span>
-              ${
-                img
-                ? `<img class="card-img" src="${img}" alt="${title||'Car image'}">`
-                : `<div class="card-img" aria-hidden="true"></div>`
-              }
+              <img class="card-img" src="${img}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}">
               <div class="card-body">
                 <h3>${title||'Car'}</h3>
                 <p>${reason}</p>
@@ -549,6 +609,7 @@
   const container=document.createElement('div');
   container.innerHTML=latestHtml+historyHtml;
   root.appendChild(container);
+  hydrateAiImages(root);
   window.__boot_done=true;
 
   // ========= load more =========
@@ -643,7 +704,7 @@
     // car cards, inline opaque styles
     const carsHtml = picks.map((c,i)=>{
       const title  = `${c.brand??''} ${c.model??''}`.trim();
-      const img    = c.image || '';
+      const img    = cardImagePlaceholder(c);
       const reason = c.reason ?? '';
 
       return `
@@ -676,28 +737,16 @@
             "
           >#${i+1}</span>
 
-          ${
-            img
-              ? `<img src="${img}" alt="${title||'Car image'}"
-                   style="
-                     width:100%;
-                     height:190px;
-                     object-fit:cover;
-                     display:block;
-                     background:var(--bg-darker);
-                     border-radius:12px;
-                     margin-bottom:12px;
-                   "/>`
-              : `<div
-                   style="
-                     width:100%;
-                     height:190px;
-                     background:var(--bg-darker);
-                     border-radius:12px;
-                     margin-bottom:12px;
-                   "
-                 ></div>`
-          }
+          <img class="card-img" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" src="${img}" alt="${title||'Car image'}"
+            style="
+              width:100%;
+              height:190px;
+              object-fit:cover;
+              display:block;
+              background:var(--bg-darker);
+              border-radius:12px;
+              margin-bottom:12px;
+            "/>
 
           <div>
             <h3
@@ -769,6 +818,7 @@
     `;
 
     openModal(detail);
+    hydrateAiImages(histBody);
   });
 
   // ========= logout =========
