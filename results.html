@@ -345,6 +345,28 @@
     appearance:none;
     font-size:14px;
   }
+  .auth-select{
+    cursor:pointer;
+    padding-right:40px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, rgba(255,255,255,.85) 50%),
+      linear-gradient(135deg, rgba(255,255,255,.85) 50%, transparent 50%);
+    background-position:
+      calc(100% - 20px) 18px,
+      calc(100% - 14px) 18px;
+    background-size:6px 6px, 6px 6px;
+    background-repeat:no-repeat;
+  }
+  .auth-select:invalid{
+    color:var(--brand-muted);
+  }
+  .auth-select option{
+    background:#0b1016;
+    color:#f5f7fa;
+  }
+  .auth-select option[value=""]{
+    color:#9aa5b4;
+  }
   .auth-input:hover, .auth-select:hover{
     border-color: rgba(var(--brand-accent),0.35);
   }
@@ -634,7 +656,10 @@ async function handleAuthAndSave(profile, answers, top3) {
 
   } catch (e) {
     console.error(e);
-    msg.textContent = e.message || String(e);
+    const raw = e?.message || String(e);
+    msg.textContent = /failed to fetch/i.test(raw)
+      ? "Network error. Please check your connection and try again."
+      : raw;
     btn.disabled = false;
   }
 }

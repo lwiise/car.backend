@@ -47,12 +47,19 @@
         color:var(--brand-ink);
       }
       .quiz_step{
-        background:var(--brand-surface);
+        background:var(--brand-bg);
         border:1px solid var(--brand-outline);
         box-shadow:0 24px 60px var(--brand-overlay);
       }
       .quiz_step.active{
         box-shadow:0 24px 60px var(--brand-overlay-dark);
+      }
+      .quiz_box, .quiz-box, .quiz_card, .quiz-card, .quiz_panel, .quiz-panel,
+      .quiz_container, .quiz-container, .quiz_wrapper, .quiz-wrapper,
+      .quiz_inner, .quiz-inner, .quiz_card-inner, .quiz-card-inner,
+      .quiz_box-inner, .quiz-box-inner{
+        background:var(--brand-bg) !important;
+        background-image:none !important;
       }
       .quiz_step .quiz_question,
       .quiz_step h2,
