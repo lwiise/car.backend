@@ -95,9 +95,9 @@ function corsHeaders() {
   return {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Methods": "POST, OPTIONS"
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, X-User-Id, X-User-Email, X-Admin-Email",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
   };
 }
 
