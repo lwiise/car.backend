@@ -113,37 +113,38 @@ function publicUrl(supa, filePath) {
 }
 
 export const handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
-    return preflightResponse(event);
-  }
-
-  if (event.httpMethod !== "POST" && event.httpMethod !== "GET") {
-    return jsonResponse(405, { error: "method_not_allowed" }, event);
-  }
-
   let brand = "";
   let model = "";
-  let force = false;
-  if (event.httpMethod === "GET") {
-    const qs = new URLSearchParams(event.queryStringParameters || {});
-    brand = String(qs.get("brand") || "").trim();
-    model = String(qs.get("model") || "").trim();
-    force = Boolean(qs.get("force"));
-  } else {
-    const body = parseJSON(event.body || "{}");
-    brand = String(body.brand || "").trim();
-    model = String(body.model || "").trim();
-    force = Boolean(body.force);
-  }
+  try {
+    if (event.httpMethod === "OPTIONS") {
+      return preflightResponse(event);
+    }
 
-  if (!brand && !model) {
-    return respondWithFallback(event, brand, model);
-  }
+    if (event.httpMethod !== "POST" && event.httpMethod !== "GET") {
+      return jsonResponse(405, { error: "method_not_allowed" }, event);
+    }
 
-  const slug = slugify(`${brand} ${model}`);
-  if (!slug) {
-    return respondWithFallback(event, brand, model);
-  }
+    let force = false;
+    if (event.httpMethod === "GET") {
+      const qs = new URLSearchParams(event.queryStringParameters || {});
+      brand = String(qs.get("brand") || "").trim();
+      model = String(qs.get("model") || "").trim();
+      force = Boolean(qs.get("force"));
+    } else {
+      const body = parseJSON(event.body || "{}");
+      brand = String(body.brand || "").trim();
+      model = String(body.model || "").trim();
+      force = Boolean(body.force);
+    }
+
+    if (!brand && !model) {
+      return respondWithFallback(event, brand, model);
+    }
+
+    const slug = slugify(`${brand} ${model}`);
+    if (!slug) {
+      return respondWithFallback(event, brand, model);
+    }
 
   let supa = null;
   try {
@@ -277,9 +278,13 @@ export const handler = async (event) => {
       isBase64Encoded: true
     };
   }
-  return jsonResponse(200, {
-    data_url: dataUrl,
-    cached: false,
-    storage_error: true
-  }, event);
+    return jsonResponse(200, {
+      data_url: dataUrl,
+      cached: false,
+      storage_error: true
+    }, event);
+  } catch (err) {
+    console.error("[carImageCORS] handler crash:", err);
+    return respondWithFallback(event, brand, model);
+  }
 };

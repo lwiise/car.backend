@@ -14,6 +14,7 @@
   const NETLIFY_BASE     = "https://carbackendd.netlify.app/.netlify/functions";
   const RESULTS_LIST_URL = `${NETLIFY_BASE}/resultsListCORS`;
   const CAR_IMAGE_URL    = `${NETLIFY_BASE}/carImageCORS`;
+  const ASSET_BASE       = "https://carbackendd.netlify.app";
 </script>
 
 <style>
@@ -404,7 +405,7 @@
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   }
   function cardImagePlaceholder(c){
-    return "/car-placeholder.svg";
+    return `${ASSET_BASE}/car-placeholder.svg`;
   }
   function aiImageUrl(brand, model){
     const b = encodeURIComponent(String(brand || ""));
@@ -444,7 +445,7 @@
           return `
             <article class="card">
               <span class="badge">#${i+1}</span>
-              <img class="card-img" src="${img}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}">
+              <img class="card-img" src="${img}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" onerror="this.onerror=null;this.src='${fallback}'">
               <div class="card-body">
                 <h3>${title||'Car'}</h3>
                 <p>${reason}</p>
@@ -728,7 +729,7 @@
             "
           >#${i+1}</span>
 
-          <img class="card-img" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" src="${img}" alt="${title||'Car image'}"
+          <img class="card-img" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" src="${img}" alt="${title||'Car image'}" onerror="this.onerror=null;this.src='${fallback}'"
             style="
               width:100%;
               height:190px;

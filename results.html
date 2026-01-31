@@ -22,6 +22,7 @@
   const host = document.getElementById("car-results-luxe");
   if (!host) return;
   const CAR_IMAGE_URL = "https://carbackendd.netlify.app/.netlify/functions/carImageCORS";
+  const ASSET_BASE = "https://carbackendd.netlify.app";
 
   // restore quiz data from sessionStorage
   function safeJSON(str){ try { return JSON.parse(str || "null"); } catch { return null; } }
@@ -71,7 +72,7 @@
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   }
   function cardImagePlaceholder(p){
-    return "/car-placeholder.svg";
+    return `${ASSET_BASE}/car-placeholder.svg`;
   }
   function aiImageUrl(brand, model){
     const b = encodeURIComponent(String(brand || ""));
@@ -270,7 +271,7 @@
       return `
         <article class="card" role="listitem" aria-label="${brand} ${model}" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
           <div class="card-media">
-            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-fallback="${fallbackUrl}">
+            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-fallback="${fallbackUrl}" onerror="this.onerror=null;this.src='${fallbackUrl}'">
           </div>
           <div class="rank">#${i+1} match</div>
           <div class="name">
@@ -285,7 +286,7 @@
     grid.innerHTML = `
       <article class="card" role="listitem" style="grid-column: 1/-1; text-align:center; padding:32px;">
         <div class="card-media">
-          <img class="card-img" src="/car-placeholder.svg" alt="No results">
+          <img class="card-img" src="${ASSET_BASE}/car-placeholder.svg" alt="No results">
         </div>
         <h2>No results</h2>
         <p class="reason">Please return to the quiz and try again.</p>
