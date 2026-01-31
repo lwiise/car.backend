@@ -404,8 +404,7 @@
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   }
   function cardImagePlaceholder(c){
-    const title = `${c?.brand ?? ''} ${c?.model ?? ''}`.trim() || 'Car';
-    return svgCardImage(title, "Recommended match");
+    return "/car-placeholder.svg";
   }
   function aiImageUrl(brand, model){
     const b = encodeURIComponent(String(brand || ""));

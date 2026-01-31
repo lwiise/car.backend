@@ -1,5 +1,4 @@
 // netlify/functions/carImageCORS.js
-import OpenAI from "openai";
 import {
   getAdminClient,
   parseJSON,
@@ -31,6 +30,50 @@ function buildPrompt(brand, model) {
     "Realistic reflections, high detail.",
     "No people, no text, no watermark, no logos."
   ].join(" ");
+}
+
+function fallbackSvg(brand, model) {
+  const title = String(`${brand || ""} ${model || ""}`).trim() || "Car";
+  const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 28);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+      <defs>
+        <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#8ea5b6" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="#04080c" stop-opacity="0.85"/>
+        </linearGradient>
+        <radialGradient id="g2" cx="0.2" cy="0.0" r="0.9">
+          <stop offset="0%" stop-color="#8ea5b6" stop-opacity="0.35"/>
+          <stop offset="70%" stop-color="#030608" stop-opacity="0.15"/>
+          <stop offset="100%" stop-color="#030608" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="1200" height="800" fill="url(#g1)"/>
+      <rect width="1200" height="800" fill="url(#g2)"/>
+      <rect x="40" y="40" width="1120" height="720" rx="28" ry="28" fill="#030608" fill-opacity="0.35" stroke="#ffffff" stroke-opacity="0.12"/>
+      <text x="80" y="380" fill="#ffffff" fill-opacity="0.92" font-size="56" font-family="Montserrat, Arial, sans-serif" font-weight="700">${safeTitle}</text>
+      <text x="80" y="440" fill="#ffffff" fill-opacity="0.65" font-size="24" font-family="Montserrat, Arial, sans-serif">Recommended match</text>
+    </svg>
+  `;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+function respondWithFallback(event, brand, model) {
+  const dataUrl = fallbackSvg(brand, model);
+  const origin = resolveOrigin(event) || "*";
+  if (event.httpMethod === "GET") {
+    const svg = decodeURIComponent(dataUrl.split(",")[1] || "");
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "image/svg+xml",
+        "Cache-Control": "public, max-age=3600",
+        "Access-Control-Allow-Origin": origin
+      },
+      body: svg
+    };
+  }
+  return jsonResponse(200, { data_url: dataUrl, cached: false, fallback: true }, event);
 }
 
 async function ensureBucket(supa) {
@@ -94,47 +137,61 @@ export const handler = async (event) => {
   }
 
   if (!brand && !model) {
-    return jsonResponse(400, { known: false, error: "missing_car_name" }, event);
+    return respondWithFallback(event, brand, model);
   }
 
   const slug = slugify(`${brand} ${model}`);
   if (!slug) {
-    return jsonResponse(400, { error: "invalid_car_name" }, event);
+    return respondWithFallback(event, brand, model);
   }
 
-  const supa = getAdminClient();
+  let supa = null;
+  try {
+    supa = getAdminClient();
+  } catch (err) {
+    console.error("[carImageCORS] getAdminClient failed:", err);
+  }
   const filePath = `${THEME_VERSION}/${slug}.${IMAGE_FORMAT}`;
 
-  let storageOk = true;
-  try {
-    const exists = await fileExists(supa, filePath);
-    if (exists && !force) {
-      const url = publicUrl(supa, filePath);
-      if (event.httpMethod === "GET") {
-        return {
-          statusCode: 302,
-          headers: {
-            Location: url,
-            "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": resolveOrigin(event) || "*"
-          }
-        };
+  let storageOk = Boolean(supa);
+  if (supa) {
+    try {
+      const exists = await fileExists(supa, filePath);
+      if (exists && !force) {
+        const url = publicUrl(supa, filePath);
+        if (event.httpMethod === "GET") {
+          return {
+            statusCode: 302,
+            headers: {
+              Location: url,
+              "Cache-Control": "public, max-age=86400",
+              "Access-Control-Allow-Origin": resolveOrigin(event) || "*"
+            }
+          };
+        }
+        return jsonResponse(200, { url, cached: true }, event);
       }
-      return jsonResponse(200, { url, cached: true }, event);
+    } catch (err) {
+      storageOk = false;
+      console.error("[carImageCORS] storage check failed:", err);
     }
-  } catch (err) {
-    storageOk = false;
-    console.error("[carImageCORS] storage check failed:", err);
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return jsonResponse(500, { error: "missing_openai_key" }, event);
+    return respondWithFallback(event, brand, model);
   }
 
   let buffer;
   let dataUrl;
   try {
+    let OpenAI;
+    try {
+      ({ default: OpenAI } = await import("openai"));
+    } catch (err) {
+      console.error("[carImageCORS] OpenAI import failed:", err);
+      return respondWithFallback(event, brand, model);
+    }
     const client = new OpenAI({ apiKey });
     const prompt = buildPrompt(brand, model);
 
@@ -160,7 +217,7 @@ export const handler = async (event) => {
     dataUrl = `data:image/${mime};base64,${buffer.toString("base64")}`;
   } catch (err) {
     console.error("[carImageCORS] OpenAI error:", err);
-    return jsonResponse(500, { error: "image_generation_failed" }, event);
+    return respondWithFallback(event, brand, model);
   }
 
   const origin = resolveOrigin(event);
@@ -203,11 +260,7 @@ export const handler = async (event) => {
           isBase64Encoded: true
         };
       }
-      return jsonResponse(200, {
-        data_url: dataUrl,
-        cached: false,
-        storage_error: true
-      }, event);
+      return respondWithFallback(event, brand, model);
     }
   }
 
