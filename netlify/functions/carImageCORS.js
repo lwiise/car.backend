@@ -112,6 +112,20 @@ function publicUrl(supa, filePath) {
   return supa.storage.from(BUCKET).getPublicUrl(filePath).data.publicUrl;
 }
 
+async function triggerBackground(brand, model, force) {
+  try {
+    const qs = new URLSearchParams({
+      brand: String(brand || ""),
+      model: String(model || ""),
+      ...(force ? { force: "1" } : {})
+    });
+    const url = `https://carbackendd.netlify.app/.netlify/functions/carImageGenerate-background?${qs.toString()}`;
+    await fetch(url, { method: "GET" });
+  } catch (err) {
+    console.warn("[carImageCORS] background trigger failed:", err?.message || err);
+  }
+}
+
 export const handler = async (event) => {
   let brand = "";
   let model = "";
@@ -146,9 +160,13 @@ export const handler = async (event) => {
       return respondWithFallback(event, brand, model);
     }
 
-  let supa = null;
-  try {
-    supa = getAdminClient();
+    if (event.httpMethod === "GET") {
+      triggerBackground(brand, model, force);
+    }
+
+    let supa = null;
+    try {
+      supa = getAdminClient();
   } catch (err) {
     console.error("[carImageCORS] getAdminClient failed:", err);
   }
@@ -178,111 +196,7 @@ export const handler = async (event) => {
     }
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
     return respondWithFallback(event, brand, model);
-  }
-
-  let buffer;
-  let dataUrl;
-  try {
-    let OpenAI;
-    try {
-      ({ default: OpenAI } = await import("openai"));
-    } catch (err) {
-      console.error("[carImageCORS] OpenAI import failed:", err);
-      return respondWithFallback(event, brand, model);
-    }
-    const client = new OpenAI({ apiKey });
-    const prompt = buildPrompt(brand, model);
-
-    const result = await client.images.generate({
-      model: IMAGE_MODEL,
-      prompt,
-      size: IMAGE_SIZE,
-      quality: IMAGE_QUALITY,
-      output_format: IMAGE_FORMAT
-    });
-
-    const img = result?.data?.[0];
-    if (img?.b64_json) {
-      buffer = Buffer.from(img.b64_json, "base64");
-    } else if (img?.url) {
-      const res = await fetch(img.url);
-      const arr = await res.arrayBuffer();
-      buffer = Buffer.from(arr);
-    } else {
-      throw new Error("image_response_empty");
-    }
-    const mime = IMAGE_FORMAT === "jpg" ? "jpeg" : IMAGE_FORMAT;
-    dataUrl = `data:image/${mime};base64,${buffer.toString("base64")}`;
-  } catch (err) {
-    console.error("[carImageCORS] OpenAI error:", err);
-    return respondWithFallback(event, brand, model);
-  }
-
-  const origin = resolveOrigin(event);
-
-  if (storageOk) {
-    try {
-      await ensureBucket(supa);
-      const { error: upErr } = await supa.storage
-        .from(BUCKET)
-        .upload(filePath, buffer, {
-          contentType: `image/${IMAGE_FORMAT}`,
-          upsert: true,
-          cacheControl: "31536000"
-        });
-      if (upErr) throw upErr;
-      const url = publicUrl(supa, filePath);
-      if (event.httpMethod === "GET") {
-        return {
-          statusCode: 302,
-          headers: {
-            Location: url,
-            "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": origin || "*"
-          }
-        };
-      }
-      return jsonResponse(200, { url, cached: false }, event);
-    } catch (err) {
-      console.error("[carImageCORS] storage upload failed:", err);
-      if (event.httpMethod === "GET") {
-        const mime = IMAGE_FORMAT === "jpg" ? "jpeg" : IMAGE_FORMAT;
-        return {
-          statusCode: 200,
-          headers: {
-            "Content-Type": `image/${mime}`,
-            "Cache-Control": "public, max-age=3600",
-            "Access-Control-Allow-Origin": origin || "*"
-          },
-          body: buffer.toString("base64"),
-          isBase64Encoded: true
-        };
-      }
-      return respondWithFallback(event, brand, model);
-    }
-  }
-
-  if (event.httpMethod === "GET") {
-    const mime = IMAGE_FORMAT === "jpg" ? "jpeg" : IMAGE_FORMAT;
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": `image/${mime}`,
-        "Cache-Control": "public, max-age=3600",
-        "Access-Control-Allow-Origin": origin || "*"
-      },
-      body: buffer.toString("base64"),
-      isBase64Encoded: true
-    };
-  }
-    return jsonResponse(200, {
-      data_url: dataUrl,
-      cached: false,
-      storage_error: true
-    }, event);
   } catch (err) {
     console.error("[carImageCORS] handler crash:", err);
     return respondWithFallback(event, brand, model);

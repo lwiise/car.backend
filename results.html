@@ -79,6 +79,26 @@
     const m = encodeURIComponent(String(model || ""));
     return `${CAR_IMAGE_URL}?brand=${b}&model=${m}`;
   }
+  function scheduleAiRetry(imgEl, max=3){
+    if (!imgEl) return;
+    let attempt = 0;
+    const aiSrc = imgEl.getAttribute("data-ai-src") || "";
+    const fallback = imgEl.getAttribute("data-fallback") || "";
+    const tick = () => {
+      attempt += 1;
+      if (attempt > max) return;
+      if (imgEl.src && imgEl.src.includes("carImageCORS")) {
+        // still hitting endpoint; give it time
+      }
+      const sep = aiSrc.includes("?") ? "&" : "?";
+      imgEl.src = `${aiSrc}${sep}t=${Date.now()}`;
+      setTimeout(tick, 4000 * attempt);
+    };
+    // only retry if we fell back
+    if (imgEl.src === fallback) {
+      setTimeout(tick, 2500);
+    }
+  }
 
   // shadow root for the fancy layout
   const shadow = host.attachShadow({ mode: "open" });
@@ -271,7 +291,7 @@
       return `
         <article class="card" role="listitem" aria-label="${brand} ${model}" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
           <div class="card-media">
-            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-fallback="${fallbackUrl}" onerror="this.onerror=null;this.src='${fallbackUrl}'">
+            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-ai-src="${imgUrl}" data-fallback="${fallbackUrl}" onerror="this.onerror=null;this.src='${fallbackUrl}'">
           </div>
           <div class="rank">#${i+1} match</div>
           <div class="name">
@@ -299,7 +319,8 @@
     img.addEventListener("error", () => {
       const fb = img.getAttribute("data-fallback");
       if (fb && img.src !== fb) img.src = fb;
-    }, { once: true });
+      scheduleAiRetry(img);
+    });
   });
 
   // summary (answers list)

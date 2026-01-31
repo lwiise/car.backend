@@ -412,6 +412,22 @@
     const m = encodeURIComponent(String(model || ""));
     return `${CAR_IMAGE_URL}?brand=${b}&model=${m}`;
   }
+  function scheduleAiRetry(imgEl, max=3){
+    if (!imgEl) return;
+    let attempt = 0;
+    const aiSrc = imgEl.getAttribute("data-ai-src") || "";
+    const fallback = imgEl.getAttribute("data-fallback") || "";
+    const tick = () => {
+      attempt += 1;
+      if (attempt > max) return;
+      const sep = aiSrc.includes("?") ? "&" : "?";
+      imgEl.src = `${aiSrc}${sep}t=${Date.now()}`;
+      setTimeout(tick, 4000 * attempt);
+    };
+    if (imgEl.src === fallback) {
+      setTimeout(tick, 2500);
+    }
+  }
   function hydrateAiImages(scope){
     const root = scope || document;
     root.querySelectorAll('img[data-ai="1"]').forEach(img => {
@@ -419,6 +435,7 @@
       img.addEventListener("error", () => {
         const fb = img.getAttribute("data-fallback");
         if (fb && img.src !== fb) img.src = fb;
+        scheduleAiRetry(img);
       }, { once: true });
       img.dataset.aiLoaded = "1";
     });
@@ -445,7 +462,7 @@
           return `
             <article class="card">
               <span class="badge">#${i+1}</span>
-              <img class="card-img" src="${img}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" onerror="this.onerror=null;this.src='${fallback}'">
+              <img class="card-img" src="${img}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-ai-src="${img}" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" onerror="this.onerror=null;this.src='${fallback}'">
               <div class="card-body">
                 <h3>${title||'Car'}</h3>
                 <p>${reason}</p>
@@ -729,7 +746,7 @@
             "
           >#${i+1}</span>
 
-          <img class="card-img" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" src="${img}" alt="${title||'Car image'}" onerror="this.onerror=null;this.src='${fallback}'"
+          <img class="card-img" data-ai="1" data-ai-src="${img}" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" src="${img}" alt="${title||'Car image'}" onerror="this.onerror=null;this.src='${fallback}'"
             style="
               width:100%;
               height:190px;
