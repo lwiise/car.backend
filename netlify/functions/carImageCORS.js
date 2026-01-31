@@ -4,7 +4,8 @@ import {
   getAdminClient,
   parseJSON,
   jsonResponse,
-  preflightResponse
+  preflightResponse,
+  resolveOrigin
 } from "./_supabaseAdmin.js";
 
 const BUCKET = process.env.CAR_IMAGE_BUCKET || "car-images";
@@ -73,14 +74,24 @@ export const handler = async (event) => {
     return preflightResponse(event);
   }
 
-  if (event.httpMethod !== "POST") {
+  if (event.httpMethod !== "POST" && event.httpMethod !== "GET") {
     return jsonResponse(405, { error: "method_not_allowed" }, event);
   }
 
-  const body = parseJSON(event.body || "{}");
-  const brand = String(body.brand || "").trim();
-  const model = String(body.model || "").trim();
-  const force = Boolean(body.force);
+  let brand = "";
+  let model = "";
+  let force = false;
+  if (event.httpMethod === "GET") {
+    const qs = new URLSearchParams(event.queryStringParameters || {});
+    brand = String(qs.get("brand") || "").trim();
+    model = String(qs.get("model") || "").trim();
+    force = Boolean(qs.get("force"));
+  } else {
+    const body = parseJSON(event.body || "{}");
+    brand = String(body.brand || "").trim();
+    model = String(body.model || "").trim();
+    force = Boolean(body.force);
+  }
 
   if (!brand && !model) {
     return jsonResponse(400, { known: false, error: "missing_car_name" }, event);
@@ -98,7 +109,18 @@ export const handler = async (event) => {
   try {
     const exists = await fileExists(supa, filePath);
     if (exists && !force) {
-      return jsonResponse(200, { url: publicUrl(supa, filePath), cached: true }, event);
+      const url = publicUrl(supa, filePath);
+      if (event.httpMethod === "GET") {
+        return {
+          statusCode: 302,
+          headers: {
+            Location: url,
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": resolveOrigin(event) || "*"
+          }
+        };
+      }
+      return jsonResponse(200, { url, cached: true }, event);
     }
   } catch (err) {
     storageOk = false;
@@ -141,6 +163,8 @@ export const handler = async (event) => {
     return jsonResponse(500, { error: "image_generation_failed" }, event);
   }
 
+  const origin = resolveOrigin(event);
+
   if (storageOk) {
     try {
       await ensureBucket(supa);
@@ -152,9 +176,33 @@ export const handler = async (event) => {
           cacheControl: "31536000"
         });
       if (upErr) throw upErr;
-      return jsonResponse(200, { url: publicUrl(supa, filePath), cached: false }, event);
+      const url = publicUrl(supa, filePath);
+      if (event.httpMethod === "GET") {
+        return {
+          statusCode: 302,
+          headers: {
+            Location: url,
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": origin || "*"
+          }
+        };
+      }
+      return jsonResponse(200, { url, cached: false }, event);
     } catch (err) {
       console.error("[carImageCORS] storage upload failed:", err);
+      if (event.httpMethod === "GET") {
+        const mime = IMAGE_FORMAT === "jpg" ? "jpeg" : IMAGE_FORMAT;
+        return {
+          statusCode: 200,
+          headers: {
+            "Content-Type": `image/${mime}`,
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": origin || "*"
+          },
+          body: buffer.toString("base64"),
+          isBase64Encoded: true
+        };
+      }
       return jsonResponse(200, {
         data_url: dataUrl,
         cached: false,
@@ -163,6 +211,19 @@ export const handler = async (event) => {
     }
   }
 
+  if (event.httpMethod === "GET") {
+    const mime = IMAGE_FORMAT === "jpg" ? "jpeg" : IMAGE_FORMAT;
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": `image/${mime}`,
+        "Cache-Control": "public, max-age=3600",
+        "Access-Control-Allow-Origin": origin || "*"
+      },
+      body: buffer.toString("base64"),
+      isBase64Encoded: true
+    };
+  }
   return jsonResponse(200, {
     data_url: dataUrl,
     cached: false,

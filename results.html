@@ -22,7 +22,6 @@
   const host = document.getElementById("car-results-luxe");
   if (!host) return;
   const CAR_IMAGE_URL = "https://carbackendd.netlify.app/.netlify/functions/carImageCORS";
-  const aiImageCache = new Map();
 
   // restore quiz data from sessionStorage
   function safeJSON(str){ try { return JSON.parse(str || "null"); } catch { return null; } }
@@ -75,27 +74,10 @@
     const title = `${p?.brand ?? ""} ${p?.model ?? ""}`.trim() || "Car";
     return svgCardImage(title, "Recommended match");
   }
-  async function fetchAiImage(brand, model){
-    const key = `${brand || ""} ${model || ""}`.trim().toLowerCase();
-    if (!key) return null;
-    if (aiImageCache.has(key)) return aiImageCache.get(key);
-    const req = fetch(CAR_IMAGE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brand, model })
-    })
-      .then(r => r.json())
-      .then(d => d?.url || d?.data_url || null)
-      .catch(() => null);
-    aiImageCache.set(key, req);
-    return req;
-  }
-  function hydrateAiImage(imgEl, brand, model){
-    if (!imgEl || imgEl.dataset.aiLoaded === "1") return;
-    imgEl.dataset.aiLoaded = "1";
-    fetchAiImage(brand, model).then(url => {
-      if (url) imgEl.src = url;
-    });
+  function aiImageUrl(brand, model){
+    const b = encodeURIComponent(String(brand || ""));
+    const m = encodeURIComponent(String(model || ""));
+    return `${CAR_IMAGE_URL}?brand=${b}&model=${m}`;
   }
 
   // shadow root for the fancy layout
@@ -284,11 +266,12 @@
       const model  = esc(modelRaw);
       const reason = esc(p.reason || "");
       const badge  = initials(brandRaw);
-      const imgUrl = cardImagePlaceholder(p);
+      const imgUrl = aiImageUrl(brandRaw, modelRaw);
+      const fallbackUrl = cardImagePlaceholder(p);
       return `
         <article class="card" role="listitem" aria-label="${brand} ${model}" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
           <div class="card-media">
-            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-fallback="${imgUrl}">
+            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-fallback="${fallbackUrl}">
           </div>
           <div class="rank">#${i+1} match</div>
           <div class="name">
@@ -317,10 +300,6 @@
       const fb = img.getAttribute("data-fallback");
       if (fb && img.src !== fb) img.src = fb;
     }, { once: true });
-    const card = img.closest(".card");
-    const brand = decodeAttr(card?.getAttribute("data-brand"));
-    const model = decodeAttr(card?.getAttribute("data-model"));
-    hydrateAiImage(img, brand, model);
   });
 
   // summary (answers list)
