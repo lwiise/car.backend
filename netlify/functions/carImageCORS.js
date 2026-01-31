@@ -94,14 +94,15 @@ export const handler = async (event) => {
   const supa = getAdminClient();
   const filePath = `${THEME_VERSION}/${slug}.${IMAGE_FORMAT}`;
 
+  let storageOk = true;
   try {
     const exists = await fileExists(supa, filePath);
     if (exists && !force) {
       return jsonResponse(200, { url: publicUrl(supa, filePath), cached: true }, event);
     }
   } catch (err) {
+    storageOk = false;
     console.error("[carImageCORS] storage check failed:", err);
-    return jsonResponse(500, { error: "storage_check_failed" }, event);
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -110,6 +111,7 @@ export const handler = async (event) => {
   }
 
   let buffer;
+  let dataUrl;
   try {
     const client = new OpenAI({ apiKey });
     const prompt = buildPrompt(brand, model);
@@ -132,25 +134,38 @@ export const handler = async (event) => {
     } else {
       throw new Error("image_response_empty");
     }
+    const mime = IMAGE_FORMAT === "jpg" ? "jpeg" : IMAGE_FORMAT;
+    dataUrl = `data:image/${mime};base64,${buffer.toString("base64")}`;
   } catch (err) {
     console.error("[carImageCORS] OpenAI error:", err);
     return jsonResponse(500, { error: "image_generation_failed" }, event);
   }
 
-  try {
-    await ensureBucket(supa);
-    const { error: upErr } = await supa.storage
-      .from(BUCKET)
-      .upload(filePath, buffer, {
-        contentType: `image/${IMAGE_FORMAT}`,
-        upsert: true,
-        cacheControl: "31536000"
-      });
-    if (upErr) throw upErr;
-  } catch (err) {
-    console.error("[carImageCORS] storage upload failed:", err);
-    return jsonResponse(500, { error: "storage_upload_failed" }, event);
+  if (storageOk) {
+    try {
+      await ensureBucket(supa);
+      const { error: upErr } = await supa.storage
+        .from(BUCKET)
+        .upload(filePath, buffer, {
+          contentType: `image/${IMAGE_FORMAT}`,
+          upsert: true,
+          cacheControl: "31536000"
+        });
+      if (upErr) throw upErr;
+      return jsonResponse(200, { url: publicUrl(supa, filePath), cached: false }, event);
+    } catch (err) {
+      console.error("[carImageCORS] storage upload failed:", err);
+      return jsonResponse(200, {
+        data_url: dataUrl,
+        cached: false,
+        storage_error: true
+      }, event);
+    }
   }
 
-  return jsonResponse(200, { url: publicUrl(supa, filePath), cached: false }, event);
+  return jsonResponse(200, {
+    data_url: dataUrl,
+    cached: false,
+    storage_error: true
+  }, event);
 };
