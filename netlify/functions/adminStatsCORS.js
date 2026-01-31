@@ -9,12 +9,12 @@ import {
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return preflightResponse();
+    return preflightResponse(event);
   }
 
   const auth = await requireAdmin(event);
   if (!auth.ok) {
-    return jsonResponse(auth.statusCode, auth.payload);
+    return jsonResponse(auth.statusCode, auth.payload, event);
   }
 
   const body     = parseJSON(event.body);
@@ -40,7 +40,7 @@ export const handler = async (event) => {
       return jsonResponse(500, {
         error: "db_stats_failed",
         detail: gCntErr.message || String(gCntErr)
-      });
+      }, event);
     }
 
     // new = rows in last X days
@@ -54,7 +54,7 @@ export const handler = async (event) => {
       return jsonResponse(500, {
         error: "db_stats_failed",
         detail: gRecErr.message || String(gRecErr)
-      });
+      }, event);
     }
 
     const newCount = (recentGuests || []).length;
@@ -62,7 +62,7 @@ export const handler = async (event) => {
     return jsonResponse(200, {
       total: typeof totalCount === "number" ? totalCount : 0,
       new: newCount
-    });
+    }, event);
   }
 
   // -------- users ----------
@@ -76,7 +76,7 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "db_stats_failed",
       detail: uCntErr.message || String(uCntErr)
-    });
+    }, event);
   }
 
   // new users (last X days) = distinct user_ids in results in that window
@@ -91,7 +91,7 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "db_stats_failed",
       detail: recErr.message || String(recErr)
-    });
+    }, event);
   }
 
   const uniqueNew = new Set();
@@ -102,5 +102,5 @@ export const handler = async (event) => {
   return jsonResponse(200, {
     total: typeof totalCount === "number" ? totalCount : 0,
     new: uniqueNew.size
-  });
+  }, event);
 };

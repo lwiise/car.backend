@@ -9,14 +9,14 @@ import {
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return preflightResponse();
+    return preflightResponse(event);
   }
 
   // this one is NOT admin-only.
   // any logged-in user can hit it (because they're saving their own data).
   const { user } = await getUserFromAuth(event);
   if (!user) {
-    return jsonResponse(401, { error: "unauthorized" });
+    return jsonResponse(401, { error: "unauthorized" }, event);
   }
 
   const body = parseJSON(event.body || "{}");
@@ -57,7 +57,7 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "profile_upsert_failed",
       detail: upErr.message || String(upErr)
-    });
+    }, event);
   }
 
   // 2. insert quiz result linked to that same user.id
@@ -72,8 +72,8 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "results_insert_failed",
       detail: insErr.message || String(insErr)
-    });
+    }, event);
   }
 
-  return jsonResponse(200, { ok: true });
+  return jsonResponse(200, { ok: true }, event);
 };

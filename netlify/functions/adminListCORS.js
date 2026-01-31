@@ -10,13 +10,13 @@ import {
 export const handler = async (event) => {
   // CORS preflight
   if (event.httpMethod === "OPTIONS") {
-    return preflightResponse();
+    return preflightResponse(event);
   }
 
   // admin gate
   const auth = await requireAdmin(event);
   if (!auth.ok) {
-    return jsonResponse(auth.statusCode, auth.payload);
+    return jsonResponse(auth.statusCode, auth.payload, event);
   }
 
   // read filters from frontend
@@ -42,7 +42,7 @@ export const handler = async (event) => {
       return jsonResponse(500, {
         error: "db_list_failed",
         detail: gErr.message || String(gErr)
-      });
+      }, event);
     }
 
     // map them into same table shape the dashboard expects
@@ -108,7 +108,7 @@ export const handler = async (event) => {
     return jsonResponse(200, {
       items: slice,
       hasMore
-    });
+    }, event);
   }
 
   // ---------- BRANCH 2: USERS (default / "all") ----------
@@ -127,7 +127,7 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "db_list_failed",
       detail: resErr.message || String(resErr)
-    });
+    }, event);
   }
 
   // dedupe each user by newest
@@ -159,7 +159,7 @@ export const handler = async (event) => {
       return jsonResponse(500, {
         error: "db_list_failed",
         detail: profErr.message || String(profErr)
-      });
+      }, event);
     }
     for (const p of profRows || []) {
       profMap[p.id] = p;
@@ -225,5 +225,5 @@ export const handler = async (event) => {
   return jsonResponse(200, {
     items: slice,
     hasMore
-  });
+  }, event);
 };

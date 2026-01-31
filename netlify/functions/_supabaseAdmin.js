@@ -13,6 +13,25 @@ const SERVICE_ROLE_KEY =
 export const ALLOWED_ORIGIN =
   process.env.ALLOWED_ORIGIN || "*";
 
+function parseAllowedOrigins() {
+  return String(ALLOWED_ORIGIN || "*")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+export function resolveOrigin(event) {
+  const origin =
+    event?.headers?.origin ||
+    event?.headers?.Origin ||
+    "";
+  const allowed = parseAllowedOrigins();
+  if (!allowed.length) return "*";
+  if (allowed.includes("*")) return "*";
+  if (origin && allowed.includes(origin)) return origin;
+  return "*";
+}
+
 export const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
   .split(",")
   .map(e => e.trim().toLowerCase())
@@ -91,10 +110,10 @@ export async function requireAdmin(event) {
 }
 
 // CORS headers (same everywhere so frontend can POST from your admin page)
-function corsHeaders() {
+function corsHeaders(origin) {
   return {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Headers":
       "Content-Type, Authorization, X-User-Id, X-User-Email, X-Admin-Email",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
@@ -102,19 +121,19 @@ function corsHeaders() {
 }
 
 // normal JSON response
-export function jsonResponse(statusCode, data) {
+export function jsonResponse(statusCode, data, event) {
   return {
     statusCode,
-    headers: corsHeaders(),
+    headers: corsHeaders(resolveOrigin(event)),
     body: JSON.stringify(data ?? null)
   };
 }
 
 // OPTIONS preflight
-export function preflightResponse() {
+export function preflightResponse(event) {
   return {
     statusCode: 200,
-    headers: corsHeaders(),
+    headers: corsHeaders(resolveOrigin(event)),
     body: ""
   };
 }

@@ -4,8 +4,7 @@ import {
   getAdminClient,
   parseJSON,
   jsonResponse,
-  preflightResponse,
-  ALLOWED_ORIGIN
+  preflightResponse
 } from "./_supabaseAdmin.js";
 
 const BUCKET = process.env.CAR_IMAGE_BUCKET || "car-images";
@@ -71,15 +70,11 @@ function publicUrl(supa, filePath) {
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return preflightResponse();
+    return preflightResponse(event);
   }
 
   if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: { "Access-Control-Allow-Origin": ALLOWED_ORIGIN },
-      body: "Method not allowed"
-    };
+    return jsonResponse(405, { error: "method_not_allowed" }, event);
   }
 
   const body = parseJSON(event.body || "{}");
@@ -88,12 +83,12 @@ export const handler = async (event) => {
   const force = Boolean(body.force);
 
   if (!brand && !model) {
-    return jsonResponse(400, { known: false, error: "missing_car_name" });
+    return jsonResponse(400, { known: false, error: "missing_car_name" }, event);
   }
 
   const slug = slugify(`${brand} ${model}`);
   if (!slug) {
-    return jsonResponse(400, { error: "invalid_car_name" });
+    return jsonResponse(400, { error: "invalid_car_name" }, event);
   }
 
   const supa = getAdminClient();
@@ -102,16 +97,16 @@ export const handler = async (event) => {
   try {
     const exists = await fileExists(supa, filePath);
     if (exists && !force) {
-      return jsonResponse(200, { url: publicUrl(supa, filePath), cached: true });
+      return jsonResponse(200, { url: publicUrl(supa, filePath), cached: true }, event);
     }
   } catch (err) {
     console.error("[carImageCORS] storage check failed:", err);
-    return jsonResponse(500, { error: "storage_check_failed" });
+    return jsonResponse(500, { error: "storage_check_failed" }, event);
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return jsonResponse(500, { error: "missing_openai_key" });
+    return jsonResponse(500, { error: "missing_openai_key" }, event);
   }
 
   let buffer;
@@ -139,7 +134,7 @@ export const handler = async (event) => {
     }
   } catch (err) {
     console.error("[carImageCORS] OpenAI error:", err);
-    return jsonResponse(500, { error: "image_generation_failed" });
+    return jsonResponse(500, { error: "image_generation_failed" }, event);
   }
 
   try {
@@ -154,8 +149,8 @@ export const handler = async (event) => {
     if (upErr) throw upErr;
   } catch (err) {
     console.error("[carImageCORS] storage upload failed:", err);
-    return jsonResponse(500, { error: "storage_upload_failed" });
+    return jsonResponse(500, { error: "storage_upload_failed" }, event);
   }
 
-  return jsonResponse(200, { url: publicUrl(supa, filePath), cached: false });
+  return jsonResponse(200, { url: publicUrl(supa, filePath), cached: false }, event);
 };

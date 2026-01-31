@@ -14,17 +14,11 @@ import {
 export const handler = async (event) => {
   // CORS preflight
   if (event.httpMethod === "OPTIONS") {
-    return preflightResponse();
+    return preflightResponse(event);
   }
 
   if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: {
-        "Access-Control-Allow-Origin": ALLOWED_ORIGIN
-      },
-      body: "Method not allowed"
-    };
+    return jsonResponse(405, { error: "method_not_allowed" }, event);
   }
 
   const body = parseJSON(event.body || "{}");
@@ -47,7 +41,7 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "guest_insert_failed",
       detail: error.message || String(error)
-    });
+    }, event);
   }
 
   // send back guest reference so frontend could (optionally) stash it
@@ -56,5 +50,5 @@ export const handler = async (event) => {
     ok: true,
     guest_id: data.id,
     created_at: data.created_at
-  });
+  }, event);
 };

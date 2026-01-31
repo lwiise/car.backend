@@ -15,12 +15,12 @@ function parseGuestId(str) {
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return preflightResponse();
+    return preflightResponse(event);
   }
 
   const auth = await requireAdmin(event);
   if (!auth.ok) {
-    return jsonResponse(auth.statusCode, auth.payload);
+    return jsonResponse(auth.statusCode, auth.payload, event);
   }
 
   const body  = parseJSON(event.body);
@@ -31,7 +31,7 @@ export const handler = async (event) => {
     return jsonResponse(400, {
       error: "bad_request",
       detail: "email required"
-    });
+    }, event);
   }
 
   const supa = getAdminClient();
@@ -44,7 +44,7 @@ export const handler = async (event) => {
       return jsonResponse(400, {
         error: "bad_request",
         detail: "invalid guest id"
-      });
+      }, event);
     }
 
     const { data: gRow, error: gErr } = await supa
@@ -58,7 +58,7 @@ export const handler = async (event) => {
       return jsonResponse(500, {
         error: "db_detail_failed",
         detail: gErr.message || String(gErr)
-      });
+      }, event);
     }
 
     const profile = {
@@ -86,7 +86,7 @@ export const handler = async (event) => {
       meta,
       picks: Array.isArray(gRow.top3) ? gRow.top3 : [],
       answers: gRow.answers || {}
-    });
+    }, event);
   }
 
   // ---------- USER branch ----------
@@ -104,14 +104,14 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "db_detail_failed",
       detail: profErr.message || String(profErr)
-    });
+    }, event);
   }
 
   if (!prof) {
     return jsonResponse(404, {
       error: "not_found",
       detail: "profile not found"
-    });
+    }, event);
   }
 
   // latest result for this user
@@ -127,7 +127,7 @@ export const handler = async (event) => {
     return jsonResponse(500, {
       error: "db_detail_failed",
       detail: resErr.message || String(resErr)
-    });
+    }, event);
   }
 
   const latestRes = latestResArr?.[0] || null;
@@ -170,5 +170,5 @@ export const handler = async (event) => {
     meta,
     picks: Array.isArray(latestRes?.top3) ? latestRes.top3 : [],
     answers: latestRes?.answers || {}
-  });
+  }, event);
 };
