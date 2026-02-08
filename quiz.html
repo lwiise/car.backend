@@ -239,9 +239,12 @@
     { brand: "Volvo", model: "XC60", type: "suv", fuel: "hybrid", budget: "high", origin: "sweden", tags: ["safe", "family"] }
   ];
 
-  const unsplashFor = (brand, model) => {
-    const q = encodeURIComponent(`${brand} ${model} car`.trim());
-    return `https://source.unsplash.com/featured/?${q}`;
+  const imageProxyFor = (brand, model) => {
+    const qs = new URLSearchParams({
+      brand: String(brand || ""),
+      model: String(model || "")
+    });
+    return `https://carbackendd.netlify.app/.netlify/functions/carImageProxy?${qs.toString()}`;
   };
 
   function normalizeAnswersText(answers) {
@@ -312,7 +315,40 @@
       return score;
     }
 
-    const ranked = LOCAL_CAR_CATALOG
+    const filterIfEnough = (list, predicate) => {
+      const filtered = list.filter(predicate);
+      return filtered.length >= 3 ? filtered : list;
+    };
+
+    const originFilters = [];
+    if (wants.china) originFilters.push("china");
+    if (wants.japan) originFilters.push("japan");
+    if (wants.korea) originFilters.push("korea");
+    if (wants.germany) originFilters.push("germany");
+
+    const fuelFilters = [];
+    if (wants.electric) fuelFilters.push("electric");
+    if (wants.hybrid) fuelFilters.push("hybrid");
+    if (wants.gas) fuelFilters.push("gas");
+
+    const typeFilters = [];
+    if (wants.suv) typeFilters.push("suv");
+    if (wants.hatch) typeFilters.push("hatch");
+    if (wants.sedan) typeFilters.push("sedan");
+    if (wants.truck) typeFilters.push("truck");
+
+    let candidates = LOCAL_CAR_CATALOG.slice();
+    if (originFilters.length) {
+      candidates = filterIfEnough(candidates, (c) => originFilters.includes(c.origin));
+    }
+    if (fuelFilters.length) {
+      candidates = filterIfEnough(candidates, (c) => fuelFilters.includes(c.fuel));
+    }
+    if (typeFilters.length) {
+      candidates = filterIfEnough(candidates, (c) => typeFilters.includes(c.type));
+    }
+
+    const ranked = candidates
       .map((car) => ({ car, score: scoreCar(car) }))
       .sort((a, b) => b.score - a.score);
 
@@ -338,7 +374,7 @@
         : car.fuel === "electric"
           ? "Efficient electric option that fits your usage."
           : "Balanced daily driver that fits your preferences.",
-      image: unsplashFor(car.brand, car.model)
+      image: imageProxyFor(car.brand, car.model)
     }));
   }
 

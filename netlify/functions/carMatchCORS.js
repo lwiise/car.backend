@@ -8,6 +8,9 @@ const SUPABASE_URL  = process.env.SUPABASE_URL;
 const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_ROLE; // service role or anon with insert access
 const openaiApiKey  = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL  = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const IMAGE_PROXY_BASE =
+  process.env.IMAGE_PROXY_URL ||
+  "https://carbackendd.netlify.app/.netlify/functions/carImageProxy";
 
 const CAR_CATALOG = [
   { brand: "Toyota", model: "Corolla", type: "sedan", fuel: "gas", budget: "low", origin: "japan", tags: ["city", "reliable"] },
@@ -30,9 +33,12 @@ const CAR_CATALOG = [
   { brand: "Volvo", model: "XC60", type: "suv", fuel: "hybrid", budget: "high", origin: "sweden", tags: ["safe", "family"] }
 ];
 
-function unsplashFor(brand, model) {
-  const q = encodeURIComponent(`${brand} ${model} car`.trim());
-  return `https://source.unsplash.com/featured/?${q}`;
+function imageProxyFor(brand, model) {
+  const qs = new URLSearchParams({
+    brand: String(brand || ""),
+    model: String(model || "")
+  });
+  return `${IMAGE_PROXY_BASE}?${qs.toString()}`;
 }
 
 function normalizeAnswersText(answers) {
@@ -103,7 +109,40 @@ function buildMockPicks(answers) {
     return score;
   }
 
-  const ranked = CAR_CATALOG
+  const filterIfEnough = (list, predicate) => {
+    const filtered = list.filter(predicate);
+    return filtered.length >= 3 ? filtered : list;
+  };
+
+  const originFilters = [];
+  if (wants.china) originFilters.push("china");
+  if (wants.japan) originFilters.push("japan");
+  if (wants.korea) originFilters.push("korea");
+  if (wants.germany) originFilters.push("germany");
+
+  const fuelFilters = [];
+  if (wants.electric) fuelFilters.push("electric");
+  if (wants.hybrid) fuelFilters.push("hybrid");
+  if (wants.gas) fuelFilters.push("gas");
+
+  const typeFilters = [];
+  if (wants.suv) typeFilters.push("suv");
+  if (wants.hatch) typeFilters.push("hatch");
+  if (wants.sedan) typeFilters.push("sedan");
+  if (wants.truck) typeFilters.push("truck");
+
+  let candidates = CAR_CATALOG.slice();
+  if (originFilters.length) {
+    candidates = filterIfEnough(candidates, (c) => originFilters.includes(c.origin));
+  }
+  if (fuelFilters.length) {
+    candidates = filterIfEnough(candidates, (c) => fuelFilters.includes(c.fuel));
+  }
+  if (typeFilters.length) {
+    candidates = filterIfEnough(candidates, (c) => typeFilters.includes(c.type));
+  }
+
+  const ranked = candidates
     .map((car) => ({ car, score: scoreCar(car) }))
     .sort((a, b) => b.score - a.score);
 
@@ -130,7 +169,7 @@ function buildMockPicks(answers) {
       : car.fuel === "electric"
         ? "Efficient electric option that fits your usage."
         : "Balanced daily driver that fits your preferences.",
-    image: unsplashFor(car.brand, car.model)
+    image: imageProxyFor(car.brand, car.model)
   }));
 }
 
@@ -236,7 +275,7 @@ async function getAiPicks(answers) {
     ...car,
     image: car.image && String(car.image).trim()
       ? car.image
-      : unsplashFor(car.brand, car.model)
+      : imageProxyFor(car.brand, car.model)
   }));
 }
 

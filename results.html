@@ -22,6 +22,7 @@
   const host = document.getElementById("car-results-luxe");
   if (!host) return;
   const CAR_IMAGE_URL = "https://carbackendd.netlify.app/.netlify/functions/carImageCORS";
+  const CAR_IMAGE_PROXY_URL = "https://carbackendd.netlify.app/.netlify/functions/carImageProxy";
   const ASSET_BASE = "https://carbackendd.netlify.app";
 
   // restore quiz data from sessionStorage
@@ -99,8 +100,11 @@
     return svgCardImage(brand, model);
   }
   function unsplashUrl(brand, model){
-    const q = encodeURIComponent(String(`${brand || ""} ${model || ""} car`).trim() || "car");
-    return `https://source.unsplash.com/featured/?${q}`;
+    const qs = new URLSearchParams({
+      brand: String(brand || ""),
+      model: String(model || "")
+    });
+    return `${CAR_IMAGE_PROXY_URL}?${qs.toString()}`;
   }
   function aiImageUrl(brand, model){
     const b = encodeURIComponent(String(brand || ""));
