@@ -74,6 +74,10 @@
   function cardImagePlaceholder(brand, model){
     return svgCardImage(brand, model);
   }
+  function unsplashUrl(brand, model){
+    const q = encodeURIComponent(String(`${brand || ""} ${model || ""} car`).trim() || "car");
+    return `https://source.unsplash.com/featured/?${q}`;
+  }
   function aiImageUrl(brand, model){
     const b = encodeURIComponent(String(brand || ""));
     const m = encodeURIComponent(String(model || ""));
@@ -305,12 +309,13 @@
       const reason = esc(p.reason || "");
       const badge  = initials(brandRaw);
       const providedUrl = String(p.image || "").trim();
+      const primaryUrl = providedUrl || unsplashUrl(brandRaw, modelRaw);
       const fallbackUrl = cardImagePlaceholder(brandRaw, modelRaw);
       const tried = "fallback";
       return `
         <article class="card" role="listitem" aria-label="${brand} ${model}" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
           <div class="card-media">
-            <img class="card-img" src="${fallbackUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-ai-src="${aiImageUrl(brandRaw, modelRaw)}" data-primary="${providedUrl}" data-fallback="${fallbackUrl}" data-tried="${tried}">
+            <img class="card-img" src="${fallbackUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-ai-src="${aiImageUrl(brandRaw, modelRaw)}" data-primary="${primaryUrl}" data-fallback="${fallbackUrl}" data-tried="${tried}">
           </div>
           <div class="rank">#${i+1} match</div>
           <div class="name">
@@ -387,7 +392,13 @@
     q10_color:       "Color preference",
   };
 
-  const entries = Object.entries(answers || {}).filter(([k]) => k !== "_meta");
+  let entries = [];
+  if (Array.isArray(answers)) {
+    entries = answers.map((item) => [item?.question || "", item?.answer || ""]);
+  } else {
+    entries = Object.entries(answers || {}).filter(([k]) => k !== "_meta");
+  }
+
   if (entries.length) {
     const dl = shadow.getElementById("dl");
     dl.innerHTML = entries.map(([k, v]) => {

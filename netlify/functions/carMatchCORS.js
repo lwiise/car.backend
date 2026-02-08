@@ -7,38 +7,145 @@ import OpenAI from "openai";
 const SUPABASE_URL  = process.env.SUPABASE_URL;
 const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_ROLE; // service role or anon with insert access
 const openaiApiKey  = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL  = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-// fallback cars if AI or DB explodes
-function buildMockPicks() {
-  return [
-    {
-      brand: "Mercedes-Benz",
-      model: "C-Class",
-      reason: "Comfortable daily luxury with balanced cost.",
-      image: "https://images.unsplash.com/photo-1503376780353-7e3c06bb6a3a?auto=format&fit=crop&w=800&q=80"
-    },
-    {
-      brand: "BMW",
-      model: "3 Series",
-      reason: "Sporty feel but still practical and reliable.",
-      image: "https://images.unsplash.com/photo-1502877338535-766e1452684a?auto=format&fit=crop&w=800&q=80"
-    },
-    {
-      brand: "Audi",
-      model: "A4",
-      reason: "Tech-forward interior, clean look, safe for long trips.",
-      image: "https://images.unsplash.com/photo-1619767886558-efdcf5ca5c12?auto=format&fit=crop&w=800&q=80"
-    }
-  ];
+const CAR_CATALOG = [
+  { brand: "Toyota", model: "Corolla", type: "sedan", fuel: "gas", budget: "low", origin: "japan", tags: ["city", "reliable"] },
+  { brand: "Honda", model: "Civic", type: "sedan", fuel: "gas", budget: "low", origin: "japan", tags: ["city", "reliable"] },
+  { brand: "Hyundai", model: "Elantra", type: "sedan", fuel: "gas", budget: "low", origin: "korea", tags: ["city", "budget"] },
+  { brand: "Volkswagen", model: "Golf", type: "hatch", fuel: "gas", budget: "mid", origin: "germany", tags: ["city", "compact"] },
+  { brand: "Mazda", model: "CX-5", type: "suv", fuel: "gas", budget: "mid", origin: "japan", tags: ["family"] },
+  { brand: "Toyota", model: "RAV4 Hybrid", type: "suv", fuel: "hybrid", budget: "mid", origin: "japan", tags: ["family"] },
+  { brand: "Nissan", model: "Leaf", type: "hatch", fuel: "electric", budget: "low", origin: "japan", tags: ["city", "ev"] },
+  { brand: "Tesla", model: "Model 3", type: "sedan", fuel: "electric", budget: "mid", origin: "usa", tags: ["tech", "ev"] },
+  { brand: "Tesla", model: "Model Y", type: "suv", fuel: "electric", budget: "high", origin: "usa", tags: ["family", "ev"] },
+  { brand: "BYD", model: "Atto 3", type: "suv", fuel: "electric", budget: "mid", origin: "china", tags: ["family", "ev"] },
+  { brand: "Geely", model: "Coolray", type: "suv", fuel: "gas", budget: "mid", origin: "china", tags: ["city"] },
+  { brand: "Chery", model: "Tiggo 7", type: "suv", fuel: "gas", budget: "mid", origin: "china", tags: ["family"] },
+  { brand: "MG", model: "4", type: "hatch", fuel: "electric", budget: "mid", origin: "china", tags: ["city", "ev"] },
+  { brand: "BMW", model: "3 Series", type: "sedan", fuel: "gas", budget: "high", origin: "germany", tags: ["sport", "luxury"] },
+  { brand: "Mercedes-Benz", model: "C-Class", type: "sedan", fuel: "gas", budget: "high", origin: "germany", tags: ["luxury", "comfort"] },
+  { brand: "Audi", model: "A4", type: "sedan", fuel: "gas", budget: "high", origin: "germany", tags: ["luxury", "tech"] },
+  { brand: "Lexus", model: "RX", type: "suv", fuel: "hybrid", budget: "high", origin: "japan", tags: ["luxury", "family"] },
+  { brand: "Volvo", model: "XC60", type: "suv", fuel: "hybrid", budget: "high", origin: "sweden", tags: ["safe", "family"] }
+];
+
+function unsplashFor(brand, model) {
+  const q = encodeURIComponent(`${brand} ${model} car`.trim());
+  return `https://source.unsplash.com/featured/?${q}`;
+}
+
+function normalizeAnswersText(answers) {
+  if (Array.isArray(answers)) {
+    return answers.map((a) => `${a?.question || ""} ${a?.answer || ""}`).join(" ").toLowerCase();
+  }
+  return JSON.stringify(answers || {}).toLowerCase();
+}
+
+function detectMonthlyBudget(text) {
+  const matches = [...text.matchAll(/(\d{2,4})[^\\n]{0,10}month/g)];
+  if (!matches.length) return null;
+  const nums = matches
+    .map((m) => parseInt(m[1], 10))
+    .filter((n) => Number.isFinite(n));
+  if (!nums.length) return null;
+  return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+}
+
+function detectBudgetTier(text) {
+  const monthly = detectMonthlyBudget(text);
+  if (monthly !== null) {
+    if (monthly <= 600) return "low";
+    if (monthly <= 1000) return "mid";
+    return "high";
+  }
+  if (/(cheap|budget|low|affordable|economy)/.test(text)) return "low";
+  if (/(luxury|premium|performance|expensive)/.test(text)) return "high";
+  return "mid";
+}
+
+function buildMockPicks(answers) {
+  const text = normalizeAnswersText(answers);
+  const wants = {
+    electric: /(electric|ev|battery)/.test(text),
+    hybrid: /(hybrid)/.test(text),
+    gas: /(gas|petrol)/.test(text),
+    suv: /(suv|crossover|family|kids|space|spacious)/.test(text),
+    truck: /(truck|pickup|towing)/.test(text),
+    hatch: /(hatch|compact|city)/.test(text),
+    sedan: /(sedan|saloon|comfort|quiet|luxury)/.test(text),
+    sport: /(sport|performance|fast)/.test(text),
+    city: /(city|suburb|urban|commute)/.test(text),
+    china: /(china|chinese)/.test(text),
+    japan: /(japan|japanese)/.test(text),
+    korea: /(korea|korean)/.test(text),
+    germany: /(german|germany)/.test(text)
+  };
+
+  const budgetTier = detectBudgetTier(text);
+
+  function scoreCar(car) {
+    let score = 0;
+    if (wants.electric && car.fuel === "electric") score += 4;
+    if (wants.hybrid && car.fuel === "hybrid") score += 3;
+    if (wants.gas && car.fuel === "gas") score += 2;
+    if (wants.suv && car.type === "suv") score += 3;
+    if (wants.truck && car.type === "truck") score += 3;
+    if (wants.hatch && car.type === "hatch") score += 2;
+    if (wants.sedan && car.type === "sedan") score += 2;
+    if (wants.sport && car.tags?.includes("sport")) score += 2;
+    if (wants.city && car.tags?.includes("city")) score += 1;
+    if (budgetTier && car.budget === budgetTier) score += 2;
+    if (wants.china && car.origin === "china") score += 4;
+    if (wants.japan && car.origin === "japan") score += 3;
+    if (wants.korea && car.origin === "korea") score += 3;
+    if (wants.germany && car.origin === "germany") score += 3;
+    return score;
+  }
+
+  const ranked = CAR_CATALOG
+    .map((car) => ({ car, score: scoreCar(car) }))
+    .sort((a, b) => b.score - a.score);
+
+  const picks = [];
+  const used = new Set();
+  for (const item of ranked) {
+    if (picks.length >= 3) break;
+    const key = `${item.car.brand}:${item.car.model}`;
+    if (used.has(key)) continue;
+    picks.push(item.car);
+    used.add(key);
+  }
+
+  while (picks.length < 3) {
+    const extra = CAR_CATALOG[picks.length % CAR_CATALOG.length];
+    picks.push(extra);
+  }
+
+  return picks.slice(0, 3).map((car) => ({
+    brand: car.brand,
+    model: car.model,
+    reason: car.type === "suv"
+      ? "Good space and comfort for daily driving and passengers."
+      : car.fuel === "electric"
+        ? "Efficient electric option that fits your usage."
+        : "Balanced daily driver that fits your preferences.",
+    image: unsplashFor(car.brand, car.model)
+  }));
 }
 
 // helper: build the system/user prompt for the AI
 function buildPromptFromAnswers(answers) {
+  const pretty =
+    Array.isArray(answers)
+      ? answers.map((a) => `- ${a?.question || "Preference"}: ${a?.answer || ""}`).join("\n")
+      : JSON.stringify(answers, null, 2);
+
   // You can shape this however you like.
   // We're giving the model clear instructions so it returns ONLY JSON.
   return `
 User preferences:
-${JSON.stringify(answers, null, 2)}
+${pretty}
 
 You are a car buying assistant.
 Pick EXACTLY 3 cars that match this user in a realistic EU market / global market (used or new is okay based on budget).
@@ -70,7 +177,7 @@ ONLY output the JSON array.
 async function getAiPicks(answers) {
   if (!openaiApiKey) {
     console.warn("[carMatchCORS] No OPENAI_API_KEY, using mock.");
-    return buildMockPicks();
+    return buildMockPicks(answers);
   }
 
   const client = new OpenAI({ apiKey: openaiApiKey });
@@ -81,7 +188,7 @@ async function getAiPicks(answers) {
   const prompt = buildPromptFromAnswers(answers);
 
   const completion = await client.responses.create({
-    model: "gpt-4o-mini", // pick a model you have access to
+    model: OPENAI_MODEL, // pick a model you have access to
     input: prompt,
   });
 
@@ -94,7 +201,7 @@ async function getAiPicks(answers) {
 
   if (!rawText) {
     console.warn("[carMatchCORS] OpenAI empty text, fallback to mock.");
-    return buildMockPicks();
+    return buildMockPicks(answers);
   }
 
   let picks = null;
@@ -114,7 +221,7 @@ async function getAiPicks(answers) {
 
   if (!Array.isArray(picks) || picks.length < 1) {
     console.warn("[carMatchCORS] picks invalid, fallback mock");
-    return buildMockPicks();
+    return buildMockPicks(answers);
   }
 
   // normalize structure: make sure each car has brand/model/reason/image
@@ -125,7 +232,12 @@ async function getAiPicks(answers) {
     image:  String(car.image  ?? "")
   }));
 
-  return cleaned;
+  return cleaned.map((car) => ({
+    ...car,
+    image: car.image && String(car.image).trim()
+      ? car.image
+      : unsplashFor(car.brand, car.model)
+  }));
 }
 
 // save result row into Supabase "results" table
@@ -186,7 +298,7 @@ export const handler = cors(async (event) => {
 
   // If ?mock=1 explicitly requested, skip AI and DB
   if (mockForced) {
-    const picks = buildMockPicks();
+    const picks = buildMockPicks(answers);
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
@@ -200,7 +312,7 @@ export const handler = cors(async (event) => {
     picks = await getAiPicks(answers);
   } catch (err) {
     console.error("[carMatchCORS] AI error:", err);
-    picks = buildMockPicks();
+    picks = buildMockPicks(answers);
   }
 
   // 2. Save to Supabase (non-blocking style, but we'll still await so history works fast)
