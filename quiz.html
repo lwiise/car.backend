@@ -123,6 +123,29 @@
 
   const toB64 = (obj) => btoa(encodeURIComponent(JSON.stringify(obj)));
 
+  function localFallbackPicks() {
+    return [
+      {
+        brand: "Mercedes-Benz",
+        model: "C-Class",
+        reason: "Comfortable daily luxury with balanced cost.",
+        image: "https://images.unsplash.com/photo-1503376780353-7e3c06bb6a3a?auto=format&fit=crop&w=800&q=80"
+      },
+      {
+        brand: "BMW",
+        model: "3 Series",
+        reason: "Sporty feel but still practical and reliable.",
+        image: "https://images.unsplash.com/photo-1502877338535-766e1452684a?auto=format&fit=crop&w=800&q=80"
+      },
+      {
+        brand: "Audi",
+        model: "A4",
+        reason: "Tech-forward interior, clean look, safe for long trips.",
+        image: "https://images.unsplash.com/photo-1619767886558-efdcf5ca5c12?auto=format&fit=crop&w=800&q=80"
+      }
+    ];
+  }
+
   function collectAnswers(root) {
     const out = {};
     const fields = root.querySelectorAll('input, select, textarea');
@@ -452,6 +475,7 @@
         log("answers", answers);
 
         let text = null;
+        let picks = null;
 
         // 1. try live
         try {
@@ -475,16 +499,17 @@
             }
             text = await mock.text();
           } catch (e2) {
-            alert("Can't reach the recommendation service right now. Please try again.");
-            return;
+            console.warn("[quiz] mock failed, using local fallback.", e2?.message || e2);
+            picks = localFallbackPicks();
           }
         }
 
-        let picks;
-        try { picks = JSON.parse(text); }
-        catch {
-          const m = text && text.match(/\[[\s\S]*\]$/);
-          if (m) { try { picks = JSON.parse(m[0]); } catch(_){} }
+        if (!picks) {
+          try { picks = JSON.parse(text); }
+          catch {
+            const m = text && text.match(/\[[\s\S]*\]$/);
+            if (m) { try { picks = JSON.parse(m[0]); } catch(_){} }
+          }
         }
 
         if (!Array.isArray(picks) || picks.length === 0) {
