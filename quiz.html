@@ -137,6 +137,25 @@
         if (lbl) return String(lbl.textContent || "").trim();
       } catch (_) {}
     }
+    const aria = el.getAttribute("aria-label");
+    if (aria) return String(aria).trim();
+    const dataName = el.getAttribute("data-name") || el.getAttribute("data-value");
+    if (dataName) return String(dataName).trim();
+
+    const wrap = el.closest(
+      ".w-radio, .w-checkbox, .quiz_option, .quiz-option, .quiz_answer, .quiz-answer, .option, .answer"
+    );
+    if (wrap) {
+      const preferred = wrap.querySelector(
+        ".w-form-label, .option-text, .quiz_option-text, .quiz-option-text, .answer-text, span, p"
+      );
+      if (preferred) {
+        const t = String(preferred.textContent || "").trim();
+        if (t) return t;
+      }
+      const t = String(wrap.textContent || "").trim();
+      if (t) return t;
+    }
     return "";
   }
 
@@ -144,6 +163,9 @@
     const out = [];
     const steps = Array.from(root.querySelectorAll(".quiz_step"));
     for (const step of steps) {
+      if (step && step.offsetParent === null && getComputedStyle(step).display === "none") {
+        continue;
+      }
       const qEl =
         step.querySelector(".quiz_question") ||
         step.querySelector(".quiz_heading") ||
@@ -151,7 +173,15 @@
         step.querySelector("h3") ||
         step.querySelector("legend");
 
-      const question = String(qEl?.textContent || "").trim();
+      let question = String(qEl?.textContent || "").trim();
+      if (!question) {
+        question =
+          step.getAttribute("data-question") ||
+          step.getAttribute("data-title") ||
+          step.getAttribute("data-step-title") ||
+          step.id ||
+          "";
+      }
       if (!question) continue;
 
       const values = [];
@@ -188,27 +218,143 @@
     return out;
   }
 
-  function localFallbackPicks() {
-    return [
-      {
-        brand: "Mercedes-Benz",
-        model: "C-Class",
-        reason: "Comfortable daily luxury with balanced cost.",
-        image: "https://images.unsplash.com/photo-1503376780353-7e3c06bb6a3a?auto=format&fit=crop&w=800&q=80"
-      },
-      {
-        brand: "BMW",
-        model: "3 Series",
-        reason: "Sporty feel but still practical and reliable.",
-        image: "https://images.unsplash.com/photo-1502877338535-766e1452684a?auto=format&fit=crop&w=800&q=80"
-      },
-      {
-        brand: "Audi",
-        model: "A4",
-        reason: "Tech-forward interior, clean look, safe for long trips.",
-        image: "https://images.unsplash.com/photo-1619767886558-efdcf5ca5c12?auto=format&fit=crop&w=800&q=80"
-      }
-    ];
+  const LOCAL_CAR_CATALOG = [
+    { brand: "Toyota", model: "Corolla", type: "sedan", fuel: "gas", budget: "low", origin: "japan", tags: ["city", "reliable"] },
+    { brand: "Honda", model: "Civic", type: "sedan", fuel: "gas", budget: "low", origin: "japan", tags: ["city", "reliable"] },
+    { brand: "Hyundai", model: "Elantra", type: "sedan", fuel: "gas", budget: "low", origin: "korea", tags: ["city", "budget"] },
+    { brand: "Volkswagen", model: "Golf", type: "hatch", fuel: "gas", budget: "mid", origin: "germany", tags: ["city", "compact"] },
+    { brand: "Mazda", model: "CX-5", type: "suv", fuel: "gas", budget: "mid", origin: "japan", tags: ["family"] },
+    { brand: "Toyota", model: "RAV4 Hybrid", type: "suv", fuel: "hybrid", budget: "mid", origin: "japan", tags: ["family"] },
+    { brand: "Nissan", model: "Leaf", type: "hatch", fuel: "electric", budget: "low", origin: "japan", tags: ["city", "ev"] },
+    { brand: "Tesla", model: "Model 3", type: "sedan", fuel: "electric", budget: "mid", origin: "usa", tags: ["tech", "ev"] },
+    { brand: "Tesla", model: "Model Y", type: "suv", fuel: "electric", budget: "high", origin: "usa", tags: ["family", "ev"] },
+    { brand: "BYD", model: "Atto 3", type: "suv", fuel: "electric", budget: "mid", origin: "china", tags: ["family", "ev"] },
+    { brand: "Geely", model: "Coolray", type: "suv", fuel: "gas", budget: "mid", origin: "china", tags: ["city"] },
+    { brand: "Chery", model: "Tiggo 7", type: "suv", fuel: "gas", budget: "mid", origin: "china", tags: ["family"] },
+    { brand: "MG", model: "4", type: "hatch", fuel: "electric", budget: "mid", origin: "china", tags: ["city", "ev"] },
+    { brand: "BMW", model: "3 Series", type: "sedan", fuel: "gas", budget: "high", origin: "germany", tags: ["sport", "luxury"] },
+    { brand: "Mercedes-Benz", model: "C-Class", type: "sedan", fuel: "gas", budget: "high", origin: "germany", tags: ["luxury", "comfort"] },
+    { brand: "Audi", model: "A4", type: "sedan", fuel: "gas", budget: "high", origin: "germany", tags: ["luxury", "tech"] },
+    { brand: "Lexus", model: "RX", type: "suv", fuel: "hybrid", budget: "high", origin: "japan", tags: ["luxury", "family"] },
+    { brand: "Volvo", model: "XC60", type: "suv", fuel: "hybrid", budget: "high", origin: "sweden", tags: ["safe", "family"] }
+  ];
+
+  const unsplashFor = (brand, model) => {
+    const q = encodeURIComponent(`${brand} ${model} car`.trim());
+    return `https://source.unsplash.com/featured/?${q}`;
+  };
+
+  function normalizeAnswersText(answers) {
+    if (Array.isArray(answers)) {
+      return answers.map((a) => `${a?.question || ""} ${a?.answer || ""}`).join(" ").toLowerCase();
+    }
+    return JSON.stringify(answers || {}).toLowerCase();
+  }
+
+  function detectMonthlyBudget(text) {
+    const matches = [...text.matchAll(/(\d{2,4})[^\\n]{0,10}month/g)];
+    if (!matches.length) return null;
+    const nums = matches
+      .map((m) => parseInt(m[1], 10))
+      .filter((n) => Number.isFinite(n));
+    if (!nums.length) return null;
+    return Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+  }
+
+  function detectBudgetTier(text) {
+    const monthly = detectMonthlyBudget(text);
+    if (monthly !== null) {
+      if (monthly <= 600) return "low";
+      if (monthly <= 1000) return "mid";
+      return "high";
+    }
+    if (/(cheap|budget|low|affordable|economy)/.test(text)) return "low";
+    if (/(luxury|premium|performance|expensive)/.test(text)) return "high";
+    return "mid";
+  }
+
+  function localMatchPicks(answers) {
+    const text = normalizeAnswersText(answers);
+    const wants = {
+      electric: /(electric|ev|battery)/.test(text),
+      hybrid: /(hybrid)/.test(text),
+      gas: /(gas|petrol)/.test(text),
+      suv: /(suv|crossover|family|kids|space|spacious)/.test(text),
+      truck: /(truck|pickup|towing)/.test(text),
+      hatch: /(hatch|compact|city)/.test(text),
+      sedan: /(sedan|saloon|comfort|quiet|luxury)/.test(text),
+      sport: /(sport|performance|fast)/.test(text),
+      city: /(city|suburb|urban|commute)/.test(text),
+      china: /(china|chinese)/.test(text),
+      japan: /(japan|japanese)/.test(text),
+      korea: /(korea|korean)/.test(text),
+      germany: /(german|germany)/.test(text)
+    };
+
+    const budgetTier = detectBudgetTier(text);
+
+    function scoreCar(car) {
+      let score = 0;
+      if (wants.electric && car.fuel === "electric") score += 4;
+      if (wants.hybrid && car.fuel === "hybrid") score += 3;
+      if (wants.gas && car.fuel === "gas") score += 2;
+      if (wants.suv && car.type === "suv") score += 3;
+      if (wants.truck && car.type === "truck") score += 3;
+      if (wants.hatch && car.type === "hatch") score += 2;
+      if (wants.sedan && car.type === "sedan") score += 2;
+      if (wants.sport && car.tags?.includes("sport")) score += 2;
+      if (wants.city && car.tags?.includes("city")) score += 1;
+      if (budgetTier && car.budget === budgetTier) score += 2;
+      if (wants.china && car.origin === "china") score += 4;
+      if (wants.japan && car.origin === "japan") score += 3;
+      if (wants.korea && car.origin === "korea") score += 3;
+      if (wants.germany && car.origin === "germany") score += 3;
+      return score;
+    }
+
+    const ranked = LOCAL_CAR_CATALOG
+      .map((car) => ({ car, score: scoreCar(car) }))
+      .sort((a, b) => b.score - a.score);
+
+    const picks = [];
+    const used = new Set();
+    for (const item of ranked) {
+      if (picks.length >= 3) break;
+      const key = `${item.car.brand}:${item.car.model}`;
+      if (used.has(key)) continue;
+      picks.push(item.car);
+      used.add(key);
+    }
+
+    while (picks.length < 3) {
+      picks.push(LOCAL_CAR_CATALOG[picks.length % LOCAL_CAR_CATALOG.length]);
+    }
+
+    return picks.slice(0, 3).map((car) => ({
+      brand: car.brand,
+      model: car.model,
+      reason: car.type === "suv"
+        ? "Good space and comfort for daily driving and passengers."
+        : car.fuel === "electric"
+          ? "Efficient electric option that fits your usage."
+          : "Balanced daily driver that fits your preferences.",
+      image: unsplashFor(car.brand, car.model)
+    }));
+  }
+
+  function normalizeKey(brand, model) {
+    return `${brand || ""}${model || ""}`.toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  function isStaticFallback(picks) {
+    if (!Array.isArray(picks) || picks.length !== 3) return false;
+    const keys = picks.map((p) => normalizeKey(p.brand, p.model));
+    const expected = ["mercedesbenzcclass", "bmw3series", "audia4"];
+    return expected.every((k) => keys.includes(k));
+  }
+
+  function localFallbackPicks(answers) {
+    return localMatchPicks(answers);
   }
 
   function collectAnswers(root) {
@@ -568,7 +714,7 @@
             text = await mock.text();
           } catch (e2) {
             console.warn("[quiz] mock failed, using local fallback.", e2?.message || e2);
-            picks = localFallbackPicks();
+            picks = localFallbackPicks(payloadAnswers);
           }
         }
 
@@ -584,6 +730,11 @@
           console.warn("[quiz] parse error. Raw:", text);
           alert("We couldn’t parse the recommendations. Please try again.");
           return;
+        }
+
+        if (isStaticFallback(picks)) {
+          const local = localMatchPicks(payloadAnswers);
+          if (Array.isArray(local) && local.length) picks = local;
         }
 
         // stash locally for results + signup modal
