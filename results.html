@@ -71,8 +71,8 @@
     `;
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   }
-  function cardImagePlaceholder(p){
-    return `${ASSET_BASE}/car-placeholder.svg`;
+  function cardImagePlaceholder(brand, model){
+    return svgCardImage(brand, model);
   }
   function aiImageUrl(brand, model){
     const b = encodeURIComponent(String(brand || ""));
@@ -98,6 +98,24 @@
     if (imgEl.src === fallback) {
       setTimeout(tick, 2500);
     }
+  }
+
+  function preloadImage(url, timeout=8000){
+    if (!url) return Promise.reject(new Error("no_url"));
+    return new Promise((resolve, reject) => {
+      const test = new Image();
+      const done = (ok, err) => {
+        clearTimeout(timer);
+        test.onload = null;
+        test.onerror = null;
+        if (ok) resolve(url);
+        else reject(err || new Error("load_failed"));
+      };
+      const timer = setTimeout(() => done(false, new Error("timeout")), timeout);
+      test.onload = () => done(true);
+      test.onerror = (e) => done(false, e);
+      test.src = url;
+    });
   }
 
   // shadow root for the fancy layout
@@ -286,12 +304,13 @@
       const model  = esc(modelRaw);
       const reason = esc(p.reason || "");
       const badge  = initials(brandRaw);
-      const imgUrl = aiImageUrl(brandRaw, modelRaw);
-      const fallbackUrl = cardImagePlaceholder(p);
+      const providedUrl = String(p.image || "").trim();
+      const fallbackUrl = cardImagePlaceholder(brandRaw, modelRaw);
+      const tried = "fallback";
       return `
         <article class="card" role="listitem" aria-label="${brand} ${model}" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
           <div class="card-media">
-            <img class="card-img" src="${imgUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-ai-src="${imgUrl}" data-fallback="${fallbackUrl}" onerror="this.onerror=null;this.src='${fallbackUrl}'">
+            <img class="card-img" src="${fallbackUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-ai-src="${aiImageUrl(brandRaw, modelRaw)}" data-primary="${providedUrl}" data-fallback="${fallbackUrl}" data-tried="${tried}">
           </div>
           <div class="rank">#${i+1} match</div>
           <div class="name">
@@ -316,8 +335,39 @@
   }
   // hydrate AI images for results
   grid.querySelectorAll('img[data-ai="1"]').forEach(img => {
+    const primary = img.getAttribute("data-primary");
+    const ai = img.getAttribute("data-ai-src");
+
+    const upgrade = async () => {
+      const candidates = [primary, ai].filter(Boolean);
+      for (const url of candidates) {
+        try {
+          await preloadImage(url);
+          img.src = url;
+          img.setAttribute("data-tried", url === primary ? "primary" : "ai");
+          return;
+        } catch (_) {}
+      }
+    };
+
+    upgrade();
+
     img.addEventListener("error", () => {
       const fb = img.getAttribute("data-fallback");
+      const tried = img.getAttribute("data-tried");
+
+      if (tried === "primary" && ai) {
+        img.setAttribute("data-tried", "ai");
+        img.src = ai;
+        return;
+      }
+
+      if (tried === "ai" && primary) {
+        img.setAttribute("data-tried", "primary");
+        img.src = primary;
+        return;
+      }
+
       if (fb && img.src !== fb) img.src = fb;
       scheduleAiRetry(img);
     });
