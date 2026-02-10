@@ -10,16 +10,21 @@
   const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpybGZrZHhwcWtoZnVzamt0cmV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk4NDc1MzYsImV4cCI6MjA3NTQyMzUzNn0.FG3eMKO7KRJ_GM4XXo5DEIDlWU7j9tjMJRJwpotNd6Y";
   const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
-  // Netlify base + CORS-wrapped endpoints (auto-detect current site)
+  // Netlify base + CORS-wrapped endpoints
+  // Use Netlify origin for functions even if site is hosted elsewhere (e.g., Webflow).
   const DEFAULT_SITE = "https://carbackendd.netlify.app";
-  const SITE_ORIGIN =
+  const PAGE_ORIGIN =
     (typeof location !== "undefined" && location.origin && location.origin !== "null")
       ? location.origin
-      : DEFAULT_SITE;
-  const NETLIFY_BASE     = `${SITE_ORIGIN}/.netlify/functions`;
+      : "";
+  const FUNCTIONS_ORIGIN =
+    (typeof window !== "undefined" && window.FUNCTIONS_ORIGIN)
+      ? String(window.FUNCTIONS_ORIGIN).replace(/\/+$/, "")
+      : (PAGE_ORIGIN && PAGE_ORIGIN.includes("netlify.app") ? PAGE_ORIGIN : DEFAULT_SITE);
+  const NETLIFY_BASE     = `${FUNCTIONS_ORIGIN}/.netlify/functions`;
   const RESULTS_LIST_URL = `${NETLIFY_BASE}/resultsListCORS`;
   const CAR_IMAGE_URL    = `${NETLIFY_BASE}/carImageCORS`;
-  const ASSET_BASE       = SITE_ORIGIN;
+  const ASSET_BASE       = FUNCTIONS_ORIGIN;
 </script>
 
 <style>
