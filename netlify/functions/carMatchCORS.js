@@ -8,9 +8,13 @@ const SUPABASE_URL  = process.env.SUPABASE_URL;
 const SUPABASE_KEY  = process.env.SUPABASE_SERVICE_ROLE; // service role or anon with insert access
 const openaiApiKey  = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL  = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const SITE_ORIGIN =
+  process.env.URL ||
+  process.env.DEPLOY_PRIME_URL ||
+  "https://carbackendd.netlify.app";
 const IMAGE_PROXY_BASE =
   process.env.IMAGE_PROXY_URL ||
-  "https://carbackendd.netlify.app/.netlify/functions/carImageProxy";
+  `${SITE_ORIGIN}/.netlify/functions/carImageProxy`;
 
 const CAR_CATALOG = [
   { brand: "Toyota", model: "Corolla", type: "sedan", fuel: "gas", budget: "low", origin: "japan", tags: ["city", "reliable"] },

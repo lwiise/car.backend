@@ -3,8 +3,12 @@
 <script>
   (function () {
     const root = document.getElementById("car-chatbot-root");
-    const CAR_CHAT_URL =
-      "https://carbackendd.netlify.app/.netlify/functions/car-chat";
+    const DEFAULT_SITE = "https://carbackendd.netlify.app";
+    const SITE_ORIGIN =
+      (typeof location !== "undefined" && location.origin && location.origin !== "null")
+        ? location.origin
+        : DEFAULT_SITE;
+    const CAR_CHAT_URL = `${SITE_ORIGIN}/.netlify/functions/car-chat`;
 
     root.innerHTML = `
       <style>

@@ -21,9 +21,15 @@
 (() => {
   const host = document.getElementById("car-results-luxe");
   if (!host) return;
-  const CAR_IMAGE_URL = "https://carbackendd.netlify.app/.netlify/functions/carImageCORS";
-  const CAR_IMAGE_PROXY_URL = "https://carbackendd.netlify.app/.netlify/functions/carImageProxy";
-  const ASSET_BASE = "https://carbackendd.netlify.app";
+  const DEFAULT_SITE = "https://carbackendd.netlify.app";
+  const SITE_ORIGIN =
+    (typeof location !== "undefined" && location.origin && location.origin !== "null")
+      ? location.origin
+      : DEFAULT_SITE;
+  const NETLIFY_BASE = `${SITE_ORIGIN}/.netlify/functions`;
+  const CAR_IMAGE_URL = `${NETLIFY_BASE}/carImageCORS`;
+  const CAR_IMAGE_PROXY_URL = `${NETLIFY_BASE}/carImageProxy`;
+  const ASSET_BASE = SITE_ORIGIN;
 
   // restore quiz data from sessionStorage
   function safeJSON(str){ try { return JSON.parse(str || "null"); } catch { return null; } }
@@ -831,7 +837,7 @@ async function handleAuthAndSave(profile, answers, top3) {
     //    This creates/updates the profile AND stores the quiz result in `results`
     setMsg("Saving your data…");
     await postJson(
-      "https://carbackendd.netlify.app/.netlify/functions/profileUpsertCORS",
+      `${NETLIFY_BASE}/profileUpsertCORS`,
       {
         email,
         name,

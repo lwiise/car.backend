@@ -112,6 +112,15 @@ function publicUrl(supa, filePath) {
   return supa.storage.from(BUCKET).getPublicUrl(filePath).data.publicUrl;
 }
 
+function resolveSiteOrigin() {
+  return (
+    process.env.URL ||
+    process.env.DEPLOY_PRIME_URL ||
+    process.env.SITE_URL ||
+    "https://carbackendd.netlify.app"
+  );
+}
+
 async function triggerBackground(brand, model, force) {
   try {
     const qs = new URLSearchParams({
@@ -119,7 +128,8 @@ async function triggerBackground(brand, model, force) {
       model: String(model || ""),
       ...(force ? { force: "1" } : {})
     });
-    const url = `https://carbackendd.netlify.app/.netlify/functions/carImageGenerate-background?${qs.toString()}`;
+    const origin = resolveSiteOrigin();
+    const url = `${origin}/.netlify/functions/carImageGenerate-background?${qs.toString()}`;
     await fetch(url, { method: "GET" });
   } catch (err) {
     console.warn("[carImageCORS] background trigger failed:", err?.message || err);

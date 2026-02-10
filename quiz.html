@@ -1,7 +1,13 @@
 <script>
 (() => {
   /* ===================== CONFIG ===================== */
-  const FN_URL = "https://carbackendd.netlify.app/.netlify/functions/carMatchCORS";
+  const DEFAULT_SITE = "https://carbackendd.netlify.app";
+  const SITE_ORIGIN =
+    (typeof location !== "undefined" && location.origin && location.origin !== "null")
+      ? location.origin
+      : DEFAULT_SITE;
+  const NETLIFY_BASE = `${SITE_ORIGIN}/.netlify/functions`;
+  const FN_URL = `${NETLIFY_BASE}/carMatchCORS`;
   const RESULTS_URL  = "/results";
   const AUTO_NEXT_SKIP = new Set(["q6","q9"]);
   const DEBUG = true;
@@ -244,7 +250,7 @@
       brand: String(brand || ""),
       model: String(model || "")
     });
-    return `https://carbackendd.netlify.app/.netlify/functions/carImageProxy?${qs.toString()}`;
+    return `${NETLIFY_BASE}/carImageProxy?${qs.toString()}`;
   };
 
   function normalizeAnswersText(answers) {
@@ -780,7 +786,7 @@
 
         // save anonymous guest result (non-blocking)
         try {
-          await fetch("https://carbackendd.netlify.app/.netlify/functions/resultsSavePublicCORS", {
+          await fetch(`${NETLIFY_BASE}/resultsSavePublicCORS`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
