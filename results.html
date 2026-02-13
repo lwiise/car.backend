@@ -22,14 +22,10 @@
   const host = document.getElementById("car-results-luxe");
   if (!host) return;
   const DEFAULT_SITE = "https://carbackendd.netlify.app";
-  const PAGE_ORIGIN =
-    (typeof location !== "undefined" && location.origin && location.origin !== "null")
-      ? location.origin
-      : "";
   const FUNCTIONS_ORIGIN =
     (typeof window !== "undefined" && window.FUNCTIONS_ORIGIN)
       ? String(window.FUNCTIONS_ORIGIN).replace(/\/+$/, "")
-      : (PAGE_ORIGIN && PAGE_ORIGIN.includes("netlify.app") ? PAGE_ORIGIN : DEFAULT_SITE);
+      : DEFAULT_SITE;
   const NETLIFY_BASE = `${FUNCTIONS_ORIGIN}/.netlify/functions`;
   const CAR_IMAGE_URL = `${NETLIFY_BASE}/carImageCORS`;
   const CAR_IMAGE_PROXY_URL = `${NETLIFY_BASE}/carImageProxy`;
