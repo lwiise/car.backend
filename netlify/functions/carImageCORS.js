@@ -59,8 +59,25 @@ function fallbackSvg(brand, model) {
 }
 
 function respondWithFallback(event, brand, model) {
-  const dataUrl = fallbackSvg(brand, model);
   const origin = resolveOrigin(event) || "*";
+  const hasCarName = Boolean(String(brand || "").trim() || String(model || "").trim());
+
+  if (hasCarName) {
+    const url = proxyUrl(brand, model);
+    if (event.httpMethod === "GET") {
+      return {
+        statusCode: 302,
+        headers: {
+          Location: url,
+          "Cache-Control": "public, max-age=1800",
+          "Access-Control-Allow-Origin": origin
+        }
+      };
+    }
+    return jsonResponse(200, { url, cached: false, fallback: true }, event);
+  }
+
+  const dataUrl = fallbackSvg(brand, model);
   if (event.httpMethod === "GET") {
     const svg = decodeURIComponent(dataUrl.split(",")[1] || "");
     return {
@@ -119,6 +136,15 @@ function resolveSiteOrigin() {
     process.env.SITE_URL ||
     "https://carbackendd.netlify.app"
   );
+}
+
+function proxyUrl(brand, model) {
+  const qs = new URLSearchParams({
+    brand: String(brand || ""),
+    model: String(model || "")
+  });
+  const origin = String(resolveSiteOrigin() || "").replace(/\/+$/, "");
+  return `${origin}/.netlify/functions/carImageProxy?${qs.toString()}`;
 }
 
 async function triggerBackground(brand, model, force) {

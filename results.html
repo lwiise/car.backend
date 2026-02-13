@@ -105,7 +105,7 @@
   function cardImagePlaceholder(brand, model){
     return svgCardImage(brand, model);
   }
-  function unsplashUrl(brand, model){
+  function proxyImageUrl(brand, model){
     const qs = new URLSearchParams({
       brand: String(brand || ""),
       model: String(model || "")
@@ -360,7 +360,7 @@
       const reason = esc(p.reason || "");
       const badge  = initials(brandRaw);
       const providedUrl = String(p.image || "").trim();
-      const primaryUrl = providedUrl || unsplashUrl(brandRaw, modelRaw);
+      const primaryUrl = providedUrl || proxyImageUrl(brandRaw, modelRaw);
       const fallbackUrl = cardImagePlaceholder(brandRaw, modelRaw);
       const tried = "fallback";
       return `

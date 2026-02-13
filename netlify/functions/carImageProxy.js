@@ -1,5 +1,10 @@
 // netlify/functions/carImageProxy.js
 
+const COMMONS_API = "https://commons.wikimedia.org/w/api.php";
+const COMMONS_MIME_OK = /^image\/(?:jpe?g|png|webp|avif)/i;
+const TITLE_BLOCKLIST =
+  /\b(logo|emblem|badge|icon|wordmark|interior|dashboard|engine|wheel|rim|manual|brochure|diagram|drawing)\b/i;
+
 function fallbackSvg(brand, model) {
   const title = String(`${brand || ""} ${model || ""}`).trim() || "Car";
   const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 28);
@@ -25,6 +30,87 @@ function fallbackSvg(brand, model) {
   `.trim();
 }
 
+function buildQueries(brand, model) {
+  const b = String(brand || "").trim();
+  const m = String(model || "").trim();
+  const title = `${b} ${m}`.trim();
+  const out = [];
+
+  if (title) out.push(`${title} car`);
+  if (b && m) out.push(`${b} ${m} front view`);
+  if (b) out.push(`${b} ${m} suv`);
+  if (b) out.push(`${b} ${m} sedan`);
+  if (b) out.push(`${b} ${m} hatchback`);
+  out.push("car exterior");
+
+  const seen = new Set();
+  return out.filter((q) => {
+    const key = String(q || "").trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function commonsApiUrl(query) {
+  const url = new URL(COMMONS_API);
+  url.searchParams.set("action", "query");
+  url.searchParams.set("format", "json");
+  url.searchParams.set("formatversion", "2");
+  url.searchParams.set("generator", "search");
+  url.searchParams.set("gsrnamespace", "6");
+  url.searchParams.set("gsrlimit", "8");
+  url.searchParams.set("gsrsearch", `${query} filetype:bitmap`);
+  url.searchParams.set("prop", "imageinfo");
+  url.searchParams.set("iiprop", "url");
+  url.searchParams.set("iiurlwidth", "1600");
+  url.searchParams.set("origin", "*");
+  return url.toString();
+}
+
+async function findCommonsImageUrl(query) {
+  const res = await fetch(commonsApiUrl(query), {
+    headers: {
+      "User-Agent": "carbackendd-image-proxy/1.0"
+    }
+  });
+  if (!res.ok) {
+    throw new Error(`commons_search_${res.status}`);
+  }
+
+  const data = await res.json();
+  const pages = Array.isArray(data?.query?.pages) ? data.query.pages : [];
+
+  for (const page of pages) {
+    const title = String(page?.title || "");
+    if (TITLE_BLOCKLIST.test(title)) continue;
+
+    const info = Array.isArray(page?.imageinfo) ? page.imageinfo[0] : null;
+    const candidate = info?.thumburl || info?.url;
+    if (!candidate) continue;
+    return candidate;
+  }
+  return null;
+}
+
+async function downloadImage(url) {
+  const res = await fetch(url, {
+    redirect: "follow",
+    headers: {
+      "User-Agent": "carbackendd-image-proxy/1.0"
+    }
+  });
+  if (!res.ok) {
+    throw new Error(`commons_image_${res.status}`);
+  }
+  const contentType = res.headers.get("content-type") || "application/octet-stream";
+  if (!COMMONS_MIME_OK.test(contentType)) {
+    throw new Error(`unsupported_content_type_${contentType}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { buf, contentType };
+}
+
 export const handler = async (event) => {
   if (event.httpMethod !== "GET") {
     return {
@@ -37,15 +123,26 @@ export const handler = async (event) => {
   const qs = new URLSearchParams(event.queryStringParameters || {});
   const brand = String(qs.get("brand") || "").trim();
   const model = String(qs.get("model") || "").trim();
-  const query = `${brand} ${model} car`.trim() || "car";
-
-  const url = `https://source.unsplash.com/featured/?${encodeURIComponent(query)}`;
 
   try {
-    const res = await fetch(url, { redirect: "follow" });
-    if (!res.ok) throw new Error(`upstream_${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    const contentType = res.headers.get("content-type") || "image/jpeg";
+    const queries = buildQueries(brand, model);
+    let remoteUrl = null;
+
+    for (const q of queries) {
+      try {
+        remoteUrl = await findCommonsImageUrl(q);
+      } catch (err) {
+        console.warn("[carImageProxy] commons lookup failed:", err?.message || err);
+      }
+      if (remoteUrl) break;
+    }
+
+    if (!remoteUrl) {
+      throw new Error("commons_no_match");
+    }
+
+    const { buf, contentType } = await downloadImage(remoteUrl);
+
     return {
       statusCode: 200,
       headers: {
@@ -56,6 +153,7 @@ export const handler = async (event) => {
       isBase64Encoded: true
     };
   } catch (err) {
+    console.warn("[carImageProxy] fallback svg:", err?.message || err);
     const svg = fallbackSvg(brand, model);
     return {
       statusCode: 200,
