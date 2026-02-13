@@ -3,8 +3,7 @@ import {
   getAdminClient,
   parseJSON,
   jsonResponse,
-  preflightResponse,
-  resolveOrigin
+  preflightResponse
 } from "./_supabaseAdmin.js";
 
 const BUCKET = process.env.CAR_IMAGE_BUCKET || "car-images";
@@ -13,6 +12,14 @@ const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 const IMAGE_SIZE = process.env.OPENAI_IMAGE_SIZE || "1536x1024";
 const IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "high";
 const IMAGE_FORMAT = process.env.OPENAI_IMAGE_FORMAT || "png";
+const STUDIO_STYLE_PROMPT = [
+  "Photorealistic automotive studio photography.",
+  "3/4 front view composition, centered subject.",
+  "Dark studio backdrop with subtle teal rim lighting.",
+  "Soft controlled key light, realistic reflections, high detail.",
+  "Clean background with no distractions.",
+  "No people, no text, no logos, no watermark."
+].join(" ");
 
 function slugify(val) {
   return String(val || "")
@@ -24,12 +31,7 @@ function slugify(val) {
 
 function buildPrompt(brand, model) {
   const title = `${brand || ""} ${model || ""}`.trim() || "car";
-  return [
-    `Photorealistic studio photo of a ${title}, 3/4 front view.`,
-    "Dark studio, soft rim-light, subtle teal highlights, clean background.",
-    "Realistic reflections, high detail.",
-    "No people, no text, no watermark, no logos."
-  ].join(" ");
+  return `${STUDIO_STYLE_PROMPT} Vehicle: ${title}.`;
 }
 
 async function ensureBucket(supa) {

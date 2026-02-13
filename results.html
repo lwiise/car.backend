@@ -2,6 +2,7 @@
 
 <!-- 1) Supabase bootstrap (must load before any auth logic) -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>
 <script>
   // Your Supabase project keys
   const SUPABASE_URL  = "https://zrlfkdxpqkhfusjktrey.supabase.co";
@@ -28,8 +29,8 @@
       : DEFAULT_SITE;
   const NETLIFY_BASE = `${FUNCTIONS_ORIGIN}/.netlify/functions`;
   const CAR_IMAGE_URL = `${NETLIFY_BASE}/carImageCORS`;
-  const CAR_IMAGE_PROXY_URL = `${NETLIFY_BASE}/carImageProxy`;
-  const ASSET_BASE = FUNCTIONS_ORIGIN;
+  const AI_POLL_MS = 4000;
+  const LOTTIE_ANIMATION_URL = "https://assets10.lottiefiles.com/packages/lf20_usmfx6bp.json";
 
   // restore quiz data from sessionStorage
   function safeJSON(str){ try { return JSON.parse(str || "null"); } catch { return null; } }
@@ -105,37 +106,14 @@
   function cardImagePlaceholder(brand, model){
     return svgCardImage(brand, model);
   }
-  function proxyImageUrl(brand, model){
-    const qs = new URLSearchParams({
-      brand: String(brand || ""),
-      model: String(model || "")
-    });
-    return `${CAR_IMAGE_PROXY_URL}?${qs.toString()}`;
-  }
-  function aiImageUrl(brand, model){
+  function aiImageStatusUrl(brand, model, trigger = false){
     const b = encodeURIComponent(String(brand || ""));
     const m = encodeURIComponent(String(model || ""));
-    return `${CAR_IMAGE_URL}?brand=${b}&model=${m}`;
+    const t = trigger ? "&trigger=1" : "";
+    return `${CAR_IMAGE_URL}?brand=${b}&model=${m}&mode=status${t}`;
   }
-  function scheduleAiRetry(imgEl, max=3){
-    if (!imgEl) return;
-    let attempt = 0;
-    const aiSrc = imgEl.getAttribute("data-ai-src") || "";
-    const fallback = imgEl.getAttribute("data-fallback") || "";
-    const tick = () => {
-      attempt += 1;
-      if (attempt > max) return;
-      if (imgEl.src && imgEl.src.includes("carImageCORS")) {
-        // still hitting endpoint; give it time
-      }
-      const sep = aiSrc.includes("?") ? "&" : "?";
-      imgEl.src = `${aiSrc}${sep}t=${Date.now()}`;
-      setTimeout(tick, 4000 * attempt);
-    };
-    // only retry if we fell back
-    if (imgEl.src === fallback) {
-      setTimeout(tick, 2500);
-    }
+  function sleep(ms){
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function preloadImage(url, timeout=8000){
@@ -154,6 +132,70 @@
       test.onerror = (e) => done(false, e);
       test.src = url;
     });
+  }
+  function setLoaderVisible(card, visible) {
+    const loader = card?.querySelector("[data-ai-loader]");
+    if (!loader) return;
+    if (visible) {
+      loader.classList.remove("is-hidden");
+      loader.hidden = false;
+    } else {
+      loader.classList.add("is-hidden");
+      loader.hidden = true;
+      if (loader.__lottie) {
+        loader.__lottie.destroy();
+        loader.__lottie = null;
+      }
+    }
+  }
+  function startLoaderAnimation(card) {
+    const loader = card?.querySelector("[data-ai-loader]");
+    const mount = card?.querySelector("[data-ai-lottie]");
+    if (!loader || !mount || !window.lottie || loader.__lottie) return;
+    loader.__lottie = window.lottie.loadAnimation({
+      container: mount,
+      renderer: "svg",
+      loop: true,
+      autoplay: true,
+      path: LOTTIE_ANIMATION_URL
+    });
+  }
+  async function pollCardForAiImage(imgEl){
+    if (!imgEl || imgEl.dataset.aiPolling === "1") return;
+    imgEl.dataset.aiPolling = "1";
+
+    const card = imgEl.closest(".card");
+    const brand = decodeAttr(imgEl.getAttribute("data-brand") || "");
+    const model = decodeAttr(imgEl.getAttribute("data-model") || "");
+    let firstPoll = true;
+
+    setLoaderVisible(card, true);
+    startLoaderAnimation(card);
+
+    while (true) {
+      if (!imgEl.isConnected) return;
+      try {
+        const statusRes = await fetch(aiImageStatusUrl(brand, model, firstPoll), {
+          method: "GET",
+          mode: "cors",
+          credentials: "omit",
+          cache: "no-store"
+        });
+        firstPoll = false;
+
+        const payload = await statusRes.json().catch(() => null);
+        if (statusRes.ok && payload?.status === "ready" && payload?.url) {
+          await preloadImage(payload.url, 12000);
+          imgEl.src = payload.url;
+          setLoaderVisible(card, false);
+          return;
+        }
+      } catch (_) {}
+
+      await sleep(AI_POLL_MS);
+      if (!imgEl.isConnected) return;
+      startLoaderAnimation(card);
+    }
   }
 
   // shadow root for the fancy layout
@@ -274,6 +316,32 @@
         object-fit:cover;
         z-index:1;
       }
+      .ai-loader{
+        position:absolute;
+        inset:0;
+        z-index:2;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        gap:10px;
+        background:linear-gradient(180deg, rgba(3,6,8,.72), rgba(3,6,8,.86));
+        transition:opacity .25s ease;
+      }
+      .ai-loader.is-hidden{
+        opacity:0;
+        pointer-events:none;
+      }
+      .ai-loader-lottie{
+        width:72px;
+        height:72px;
+      }
+      .ai-loader-text{
+        font-size:12px;
+        letter-spacing:.06em;
+        text-transform:uppercase;
+        color:rgba(255,255,255,.78);
+      }
       .rank{
         font-size:12px; color:rgba(var(--accent),.85); letter-spacing:.16em;
         text-transform:uppercase; margin-bottom:6px;
@@ -359,15 +427,16 @@
       const model  = esc(modelRaw);
       const reason = esc(p.reason || "");
       const badge  = initials(brandRaw);
-      const providedUrl = String(p.image || "").trim();
-      const primaryUrl = providedUrl || proxyImageUrl(brandRaw, modelRaw);
       const fallbackUrl = cardImagePlaceholder(brandRaw, modelRaw);
-      const tried = "fallback";
       return `
         <article class="card" role="listitem" aria-label="${brand} ${model}" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
           <div class="card-media">
             <div class="card-fallback" aria-hidden="true">${svgCardMarkup(brandRaw, modelRaw)}</div>
-            <img class="card-img" src="${fallbackUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-ai-src="${aiImageUrl(brandRaw, modelRaw)}" data-primary="${primaryUrl}" data-fallback="${fallbackUrl}" data-tried="${tried}">
+            <img class="card-img" src="${fallbackUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
+            <div class="ai-loader" data-ai-loader role="status" aria-live="polite">
+              <div class="ai-loader-lottie" data-ai-lottie></div>
+              <div class="ai-loader-text">Generating AI image...</div>
+            </div>
           </div>
           <div class="rank">#${i+1} match</div>
           <div class="name">
@@ -393,42 +462,7 @@
   }
   // hydrate AI images for results
   grid.querySelectorAll('img[data-ai="1"]').forEach(img => {
-    const primary = img.getAttribute("data-primary");
-    const ai = img.getAttribute("data-ai-src");
-
-    const upgrade = async () => {
-      const candidates = [primary, ai].filter(Boolean);
-      for (const url of candidates) {
-        try {
-          await preloadImage(url);
-          img.src = url;
-          img.setAttribute("data-tried", url === primary ? "primary" : "ai");
-          return;
-        } catch (_) {}
-      }
-    };
-
-    upgrade();
-
-    img.addEventListener("error", () => {
-      const fb = img.getAttribute("data-fallback");
-      const tried = img.getAttribute("data-tried");
-
-      if (tried === "primary" && ai) {
-        img.setAttribute("data-tried", "ai");
-        img.src = ai;
-        return;
-      }
-
-      if (tried === "ai" && primary) {
-        img.setAttribute("data-tried", "primary");
-        img.src = primary;
-        return;
-      }
-
-      if (fb && img.src !== fb) img.src = fb;
-      scheduleAiRetry(img);
-    });
+    pollCardForAiImage(img);
   });
 
   // summary (answers list)

@@ -9,10 +9,8 @@ import {
 
 const BUCKET = process.env.CAR_IMAGE_BUCKET || "car-images";
 const THEME_VERSION = process.env.CAR_IMAGE_THEME || "v1";
-const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
-const IMAGE_SIZE = process.env.OPENAI_IMAGE_SIZE || "1536x1024";
-const IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "high";
 const IMAGE_FORMAT = process.env.OPENAI_IMAGE_FORMAT || "png";
+const POLL_AFTER_MS = 4000;
 
 function slugify(val) {
   return String(val || "")
@@ -22,75 +20,9 @@ function slugify(val) {
     .slice(0, 80);
 }
 
-function buildPrompt(brand, model) {
-  const title = `${brand || ""} ${model || ""}`.trim() || "car";
-  return [
-    `Photorealistic studio photo of a ${title}, 3/4 front view.`,
-    "Dark studio, soft rim-light, subtle teal highlights, clean background.",
-    "Realistic reflections, high detail.",
-    "No people, no text, no watermark, no logos."
-  ].join(" ");
-}
-
-function fallbackSvg(brand, model) {
-  const title = String(`${brand || ""} ${model || ""}`).trim() || "Car";
-  const safeTitle = title.replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 28);
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
-      <defs>
-        <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#8ea5b6" stop-opacity="0.35"/>
-          <stop offset="100%" stop-color="#04080c" stop-opacity="0.85"/>
-        </linearGradient>
-        <radialGradient id="g2" cx="0.2" cy="0.0" r="0.9">
-          <stop offset="0%" stop-color="#8ea5b6" stop-opacity="0.35"/>
-          <stop offset="70%" stop-color="#030608" stop-opacity="0.15"/>
-          <stop offset="100%" stop-color="#030608" stop-opacity="0"/>
-        </radialGradient>
-      </defs>
-      <rect width="1200" height="800" fill="url(#g1)"/>
-      <rect width="1200" height="800" fill="url(#g2)"/>
-      <rect x="40" y="40" width="1120" height="720" rx="28" ry="28" fill="#030608" fill-opacity="0.35" stroke="#ffffff" stroke-opacity="0.12"/>
-      <text x="80" y="380" fill="#ffffff" fill-opacity="0.92" font-size="56" font-family="Montserrat, Arial, sans-serif" font-weight="700">${safeTitle}</text>
-      <text x="80" y="440" fill="#ffffff" fill-opacity="0.65" font-size="24" font-family="Montserrat, Arial, sans-serif">Recommended match</text>
-    </svg>
-  `;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
-
-function respondWithFallback(event, brand, model) {
-  const origin = resolveOrigin(event) || "*";
-  const hasCarName = Boolean(String(brand || "").trim() || String(model || "").trim());
-
-  if (hasCarName) {
-    const url = proxyUrl(brand, model);
-    if (event.httpMethod === "GET") {
-      return {
-        statusCode: 302,
-        headers: {
-          Location: url,
-          "Cache-Control": "public, max-age=1800",
-          "Access-Control-Allow-Origin": origin
-        }
-      };
-    }
-    return jsonResponse(200, { url, cached: false, fallback: true }, event);
-  }
-
-  const dataUrl = fallbackSvg(brand, model);
-  if (event.httpMethod === "GET") {
-    const svg = decodeURIComponent(dataUrl.split(",")[1] || "");
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "image/svg+xml",
-        "Cache-Control": "public, max-age=3600",
-        "Access-Control-Allow-Origin": origin
-      },
-      body: svg
-    };
-  }
-  return jsonResponse(200, { data_url: dataUrl, cached: false, fallback: true }, event);
+function isTruthy(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
 async function ensureBucket(supa) {
@@ -138,13 +70,12 @@ function resolveSiteOrigin() {
   );
 }
 
-function proxyUrl(brand, model) {
-  const qs = new URLSearchParams({
-    brand: String(brand || ""),
-    model: String(model || "")
-  });
-  const origin = String(resolveSiteOrigin() || "").replace(/\/+$/, "");
-  return `${origin}/.netlify/functions/carImageProxy?${qs.toString()}`;
+function pendingPayload() {
+  return {
+    status: "pending",
+    cached: false,
+    poll_after_ms: POLL_AFTER_MS
+  };
 }
 
 async function triggerBackground(brand, model, force) {
@@ -175,66 +106,90 @@ export const handler = async (event) => {
     }
 
     let force = false;
+    let trigger = false;
+    let mode = "";
     if (event.httpMethod === "GET") {
       const qs = new URLSearchParams(event.queryStringParameters || {});
       brand = String(qs.get("brand") || "").trim();
       model = String(qs.get("model") || "").trim();
-      force = Boolean(qs.get("force"));
+      force = isTruthy(qs.get("force"));
+      trigger = isTruthy(qs.get("trigger"));
+      mode = String(qs.get("mode") || "").trim().toLowerCase();
     } else {
       const body = parseJSON(event.body || "{}");
       brand = String(body.brand || "").trim();
       model = String(body.model || "").trim();
-      force = Boolean(body.force);
+      force = isTruthy(body.force);
+      trigger = isTruthy(body.trigger);
+      mode = String(body.mode || "").trim().toLowerCase();
     }
 
     if (!brand && !model) {
-      return respondWithFallback(event, brand, model);
+      return jsonResponse(400, { error: "missing_car_name" }, event);
     }
 
     const slug = slugify(`${brand} ${model}`);
     if (!slug) {
-      return respondWithFallback(event, brand, model);
-    }
-
-    if (event.httpMethod === "GET") {
-      triggerBackground(brand, model, force);
+      return jsonResponse(400, { error: "invalid_car_name" }, event);
     }
 
     let supa = null;
     try {
       supa = getAdminClient();
-  } catch (err) {
-    console.error("[carImageCORS] getAdminClient failed:", err);
-  }
-  const filePath = `${THEME_VERSION}/${slug}.${IMAGE_FORMAT}`;
-
-  let storageOk = Boolean(supa);
-  if (supa) {
-    try {
-      const exists = await fileExists(supa, filePath);
-      if (exists && !force) {
-        const url = publicUrl(supa, filePath);
-        if (event.httpMethod === "GET") {
-          return {
-            statusCode: 302,
-            headers: {
-              Location: url,
-              "Cache-Control": "public, max-age=86400",
-              "Access-Control-Allow-Origin": resolveOrigin(event) || "*"
-            }
-          };
-        }
-        return jsonResponse(200, { url, cached: true }, event);
-      }
     } catch (err) {
-      storageOk = false;
-      console.error("[carImageCORS] storage check failed:", err);
+      console.error("[carImageCORS] getAdminClient failed:", err);
     }
-  }
 
-    return respondWithFallback(event, brand, model);
+    const filePath = `${THEME_VERSION}/${slug}.${IMAGE_FORMAT}`;
+    let exists = false;
+    let url = "";
+    if (supa) {
+      try {
+        exists = await fileExists(supa, filePath);
+        if (exists && !force) {
+          url = publicUrl(supa, filePath);
+        }
+      } catch (err) {
+        console.error("[carImageCORS] storage check failed:", err);
+      }
+    }
+
+    if (mode === "status") {
+      if (exists && !force && url) {
+        return jsonResponse(200, { status: "ready", url, cached: true }, event);
+      }
+      if (trigger) {
+        triggerBackground(brand, model, force);
+      }
+      return jsonResponse(200, pendingPayload(), event);
+    }
+
+    if (exists && !force && url) {
+      if (event.httpMethod === "GET") {
+        return {
+          statusCode: 302,
+          headers: {
+            Location: url,
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": resolveOrigin(event) || "*",
+            "Access-Control-Allow-Headers":
+              "Content-Type, Authorization, X-User-Id, X-User-Email, X-Admin-Email",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+          }
+        };
+      }
+      return jsonResponse(200, { url, cached: true }, event);
+    }
+
+    if (event.httpMethod === "GET") {
+      triggerBackground(brand, model, force);
+    } else if (trigger) {
+      triggerBackground(brand, model, force);
+    }
+
+    return jsonResponse(202, pendingPayload(), event);
   } catch (err) {
     console.error("[carImageCORS] handler crash:", err);
-    return respondWithFallback(event, brand, model);
+    return jsonResponse(202, pendingPayload(), event);
   }
 };

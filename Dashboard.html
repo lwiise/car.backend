@@ -4,6 +4,7 @@
 
 <!-- Supabase -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>
 <script>
   // ---- Supabase client ----
   const SUPABASE_URL  = "https://zrlfkdxpqkhfusjktrey.supabase.co";
@@ -21,6 +22,8 @@
   const RESULTS_LIST_URL = `${NETLIFY_BASE}/resultsListCORS`;
   const CAR_IMAGE_URL    = `${NETLIFY_BASE}/carImageCORS`;
   const ASSET_BASE       = FUNCTIONS_ORIGIN;
+  const AI_POLL_MS       = 4000;
+  const LOTTIE_ANIMATION_URL = "https://assets10.lottiefiles.com/packages/lf20_usmfx6bp.json";
 </script>
 
 <style>
@@ -133,6 +136,49 @@
   .card-img{
     width:100%;height:190px;object-fit:cover;
     display:block;background:var(--bg-darker);opacity:.95
+  }
+  .ai-media{
+    position:relative;
+    width:100%;
+    height:190px;
+    background:var(--bg-darker);
+    overflow:hidden;
+  }
+  .ai-media-modal{
+    border-radius:12px;
+    margin-bottom:12px;
+  }
+  .ai-media-modal .card-img{
+    border-radius:12px;
+  }
+  .ai-loader{
+    position:absolute;
+    inset:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:10px;
+    z-index:2;
+    background:linear-gradient(180deg, rgba(3,6,8,.72), rgba(3,6,8,.86));
+    transition:opacity .25s ease;
+  }
+  .ai-loader.is-hidden{
+    opacity:0;
+    pointer-events:none;
+  }
+  .ai-loader.ai-media-modal{
+    border-radius:12px;
+  }
+  .ai-loader-lottie{
+    width:72px;
+    height:72px;
+  }
+  .ai-loader-text{
+    font-size:12px;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    color:rgba(255,255,255,.78);
   }
   .card-body{padding:16px}
   .card h3{
@@ -413,37 +459,107 @@
   function cardImagePlaceholder(c){
     return svgCardImage(c?.brand ?? "", c?.model ?? "");
   }
-  function aiImageUrl(brand, model){
+  function aiStatusUrl(brand, model, trigger){
     const b = encodeURIComponent(String(brand || ""));
     const m = encodeURIComponent(String(model || ""));
-    return `${CAR_IMAGE_URL}?brand=${b}&model=${m}`;
+    return `${CAR_IMAGE_URL}?brand=${b}&model=${m}&mode=status${trigger ? "&trigger=1" : ""}`;
   }
-  function scheduleAiRetry(imgEl, max=3){
-    if (!imgEl) return;
-    let attempt = 0;
-    const aiSrc = imgEl.getAttribute("data-ai-src") || "";
-    const fallback = imgEl.getAttribute("data-fallback") || "";
-    const tick = () => {
-      attempt += 1;
-      if (attempt > max) return;
-      const sep = aiSrc.includes("?") ? "&" : "?";
-      imgEl.src = `${aiSrc}${sep}t=${Date.now()}`;
-      setTimeout(tick, 4000 * attempt);
-    };
-    if (imgEl.src === fallback) {
-      setTimeout(tick, 2500);
+  function sleep(ms){
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+  function setLoaderVisible(imgEl, visible){
+    const wrapper = imgEl?.closest("[data-ai-shell]");
+    const loader = wrapper?.querySelector("[data-ai-loader]");
+    if (!loader) return;
+    if (visible) {
+      loader.classList.remove("is-hidden");
+      loader.hidden = false;
+      return;
+    }
+    loader.classList.add("is-hidden");
+    loader.hidden = true;
+    if (loader.__lottie) {
+      loader.__lottie.destroy();
+      loader.__lottie = null;
+    }
+  }
+  function startLoaderAnimation(imgEl){
+    const wrapper = imgEl?.closest("[data-ai-shell]");
+    const loader = wrapper?.querySelector("[data-ai-loader]");
+    const mount = wrapper?.querySelector("[data-ai-lottie]");
+    if (!loader || !mount || !window.lottie || loader.__lottie) return;
+    loader.__lottie = window.lottie.loadAnimation({
+      container: mount,
+      renderer: "svg",
+      loop: true,
+      autoplay: true,
+      path: LOTTIE_ANIMATION_URL
+    });
+  }
+  function preloadImage(url, timeoutMs = 12000){
+    if (!url) return Promise.reject(new Error("no_url"));
+    return new Promise((resolve, reject) => {
+      const test = new Image();
+      const timer = setTimeout(() => {
+        test.onload = null;
+        test.onerror = null;
+        reject(new Error("timeout"));
+      }, timeoutMs);
+      test.onload = () => {
+        clearTimeout(timer);
+        test.onload = null;
+        test.onerror = null;
+        resolve(url);
+      };
+      test.onerror = () => {
+        clearTimeout(timer);
+        test.onload = null;
+        test.onerror = null;
+        reject(new Error("load_failed"));
+      };
+      test.src = url;
+    });
+  }
+  async function pollAiImage(imgEl){
+    if (!imgEl || imgEl.dataset.aiPolling === "1") return;
+    imgEl.dataset.aiPolling = "1";
+
+    const brand = decodeAttr(imgEl.getAttribute("data-brand") || "");
+    const model = decodeAttr(imgEl.getAttribute("data-model") || "");
+    let firstPoll = true;
+
+    setLoaderVisible(imgEl, true);
+    startLoaderAnimation(imgEl);
+
+    while (true) {
+      if (!imgEl.isConnected) return;
+      try {
+        const res = await fetch(aiStatusUrl(brand, model, firstPoll), {
+          method: "GET",
+          mode: "cors",
+          credentials: "omit",
+          cache: "no-store"
+        });
+        firstPoll = false;
+
+        const payload = await res.json().catch(() => null);
+        if (res.ok && payload?.status === "ready" && payload?.url) {
+          await preloadImage(payload.url);
+          imgEl.src = payload.url;
+          setLoaderVisible(imgEl, false);
+          return;
+        }
+      } catch (_) {}
+
+      await sleep(AI_POLL_MS);
+      if (!imgEl.isConnected) return;
+      startLoaderAnimation(imgEl);
     }
   }
   function hydrateAiImages(scope){
     const root = scope || document;
     root.querySelectorAll('img[data-ai="1"]').forEach(img => {
-      if (img.dataset.aiLoaded === "1") return;
-      img.addEventListener("error", () => {
-        const fb = img.getAttribute("data-fallback");
-        if (fb && img.src !== fb) img.src = fb;
-        scheduleAiRetry(img);
-      }, { once: true });
-      img.dataset.aiLoaded = "1";
+      pollAiImage(img);
     });
   }
   function shortSummary(r){
@@ -462,13 +578,18 @@
       <div class="grid" id="latest-grid">
         ${top3.slice(0,3).map((c,i)=>{
           const title=`${c.brand??''} ${c.model??''}`.trim();
-          const img=aiImageUrl(c?.brand ?? "", c?.model ?? "");
           const fallback=cardImagePlaceholder(c);
           const reason=c.reason??'';
           return `
             <article class="card">
               <span class="badge">#${i+1}</span>
-              <img class="card-img" src="${img}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-ai-src="${img}" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" onerror="this.onerror=null;this.src='${fallback}'">
+              <div class="ai-media" data-ai-shell>
+                <img class="card-img" src="${fallback}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}">
+                <div class="ai-loader" data-ai-loader role="status" aria-live="polite">
+                  <div class="ai-loader-lottie" data-ai-lottie></div>
+                  <div class="ai-loader-text">Generating AI image...</div>
+                </div>
+              </div>
               <div class="card-body">
                 <h3>${title||'Car'}</h3>
                 <p>${reason}</p>
@@ -718,7 +839,6 @@
     // car cards, inline opaque styles
     const carsHtml = picks.map((c,i)=>{
       const title  = `${c.brand??''} ${c.model??''}`.trim();
-      const img    = aiImageUrl(c?.brand ?? "", c?.model ?? "");
       const fallback = cardImagePlaceholder(c);
       const reason = c.reason ?? '';
 
@@ -752,16 +872,21 @@
             "
           >#${i+1}</span>
 
-          <img class="card-img" data-ai="1" data-ai-src="${img}" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" data-fallback="${fallback}" src="${img}" alt="${title||'Car image'}" onerror="this.onerror=null;this.src='${fallback}'"
-            style="
-              width:100%;
-              height:190px;
-              object-fit:cover;
-              display:block;
-              background:var(--bg-darker);
-              border-radius:12px;
-              margin-bottom:12px;
-            "/>
+          <div class="ai-media ai-media-modal" data-ai-shell>
+            <img class="card-img" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" src="${fallback}" alt="${title||'Car image'}"
+              style="
+                width:100%;
+                height:190px;
+                object-fit:cover;
+                display:block;
+                background:var(--bg-darker);
+                border-radius:12px;
+              "/>
+            <div class="ai-loader ai-media-modal" data-ai-loader role="status" aria-live="polite">
+              <div class="ai-loader-lottie" data-ai-lottie></div>
+              <div class="ai-loader-text">Generating AI image...</div>
+            </div>
+          </div>
 
           <div>
             <h3
