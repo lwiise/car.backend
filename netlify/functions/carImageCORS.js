@@ -11,6 +11,7 @@ const BUCKET = process.env.CAR_IMAGE_BUCKET || "car-images";
 const THEME_VERSION = process.env.CAR_IMAGE_THEME || "v1";
 const IMAGE_FORMAT = process.env.OPENAI_IMAGE_FORMAT || "png";
 const POLL_AFTER_MS = 4000;
+const SYNC_GENERATE_TIMEOUT_MS = Number(process.env.CAR_IMAGE_SYNC_TIMEOUT_MS || 15000);
 
 function slugify(val) {
   return String(val || "")
@@ -78,6 +79,14 @@ function pendingPayload() {
   };
 }
 
+function errorPayload(errorCode) {
+  return {
+    status: "error",
+    error: String(errorCode || "generate_failed"),
+    poll_after_ms: POLL_AFTER_MS
+  };
+}
+
 async function triggerBackground(brand, model, force) {
   try {
     const qs = new URLSearchParams({
@@ -90,6 +99,44 @@ async function triggerBackground(brand, model, force) {
     await fetch(url, { method: "GET" });
   } catch (err) {
     console.warn("[carImageCORS] background trigger failed:", err?.message || err);
+  }
+}
+
+async function triggerSyncGenerate(brand, model, force) {
+  const qs = new URLSearchParams({
+    brand: String(brand || ""),
+    model: String(model || ""),
+    ...(force ? { force: "1" } : {})
+  });
+  const origin = String(resolveSiteOrigin() || "").replace(/\/+$/, "");
+  const url = `${origin}/.netlify/functions/carImageGenerate?${qs.toString()}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SYNC_GENERATE_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      signal: controller.signal
+    });
+
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) {}
+
+    if (res.ok && data?.url) {
+      return { status: "ready", url: data.url, cached: Boolean(data.cached) };
+    }
+    if (!res.ok) {
+      return { status: "error", error: data?.error || `generate_http_${res.status}` };
+    }
+    return { status: "pending" };
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      return { status: "pending" };
+    }
+    return { status: "error", error: "generate_fetch_failed" };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -158,9 +205,18 @@ export const handler = async (event) => {
       if (exists && !force && url) {
         return jsonResponse(200, { status: "ready", url, cached: true }, event);
       }
+
       if (trigger) {
+        const sync = await triggerSyncGenerate(brand, model, force);
+        if (sync.status === "ready" && sync.url) {
+          return jsonResponse(200, { status: "ready", url: sync.url, cached: Boolean(sync.cached) }, event);
+        }
+        if (sync.status === "error") {
+          return jsonResponse(200, errorPayload(sync.error), event);
+        }
         triggerBackground(brand, model, force);
       }
+
       return jsonResponse(200, pendingPayload(), event);
     }
 

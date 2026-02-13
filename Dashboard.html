@@ -23,6 +23,7 @@
   const CAR_IMAGE_URL    = `${NETLIFY_BASE}/carImageCORS`;
   const ASSET_BASE       = FUNCTIONS_ORIGIN;
   const AI_POLL_MS       = 4000;
+  const IMAGE_CACHE_KEY  = "carImageCacheV1";
   const LOTTIE_ANIMATION_URL = "https://assets10.lottiefiles.com/packages/lf20_usmfx6bp.json";
 </script>
 
@@ -431,6 +432,31 @@
   function decodeAttr(val){
     try { return decodeURIComponent(String(val ?? "")); } catch { return String(val ?? ""); }
   }
+  function safeJSON(str){
+    try { return JSON.parse(str || "null"); } catch { return null; }
+  }
+  function carKey(brand, model){
+    return `${brand || ""}::${model || ""}`.toLowerCase().replace(/[^a-z0-9:]+/g, "");
+  }
+  const imageCache = safeJSON(sessionStorage.getItem(IMAGE_CACHE_KEY))
+    || safeJSON(localStorage.getItem(IMAGE_CACHE_KEY))
+    || {};
+  function persistImageCache(){
+    const raw = JSON.stringify(imageCache);
+    try { sessionStorage.setItem(IMAGE_CACHE_KEY, raw); } catch (_) {}
+    try { localStorage.setItem(IMAGE_CACHE_KEY, raw); } catch (_) {}
+  }
+  function rememberDisplayedImage(brand, model, url){
+    const key = carKey(brand, model);
+    if (!key || !url) return;
+    imageCache[key] = url;
+    persistImageCache();
+  }
+  function getKnownImage(brand, model, direct){
+    const explicit = String(direct || "").trim();
+    if (explicit) return explicit;
+    return imageCache[carKey(brand, model)] || "";
+  }
   function svgCardImage(title, subtitle){
     const safeTitle = String(title || "Car").replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 28);
     const safeSub = String(subtitle || "").replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 36);
@@ -483,6 +509,11 @@
       loader.__lottie = null;
     }
   }
+  function setLoaderText(imgEl, text){
+    const wrapper = imgEl?.closest("[data-ai-shell]");
+    const label = wrapper?.querySelector("[data-ai-loader-text]");
+    if (label) label.textContent = String(text || "");
+  }
   function startLoaderAnimation(imgEl){
     const wrapper = imgEl?.closest("[data-ai-shell]");
     const loader = wrapper?.querySelector("[data-ai-loader]");
@@ -529,6 +560,7 @@
     let firstPoll = true;
 
     setLoaderVisible(imgEl, true);
+    setLoaderText(imgEl, "Generating AI image...");
     startLoaderAnimation(imgEl);
 
     while (true) {
@@ -546,7 +578,13 @@
         if (res.ok && payload?.status === "ready" && payload?.url) {
           await preloadImage(payload.url);
           imgEl.src = payload.url;
+          rememberDisplayedImage(brand, model, payload.url);
           setLoaderVisible(imgEl, false);
+          return;
+        }
+        if (payload?.status === "error") {
+          setLoaderText(imgEl, "AI image unavailable right now.");
+          setLoaderVisible(imgEl, true);
           return;
         }
       } catch (_) {}
@@ -578,18 +616,26 @@
       <div class="grid" id="latest-grid">
         ${top3.slice(0,3).map((c,i)=>{
           const title=`${c.brand??''} ${c.model??''}`.trim();
+          const knownImage = getKnownImage(c?.brand ?? "", c?.model ?? "", c?.image ?? "");
           const fallback=cardImagePlaceholder(c);
           const reason=c.reason??'';
-          return `
-            <article class="card">
-              <span class="badge">#${i+1}</span>
+          const media = knownImage
+            ? `
+              <div class="ai-media" data-ai-shell>
+                <img class="card-img" src="${knownImage}" alt="${title||'Car image'}" loading="lazy">
+              </div>`
+            : `
               <div class="ai-media" data-ai-shell>
                 <img class="card-img" src="${fallback}" alt="${title||'Car image'}" loading="lazy" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}">
                 <div class="ai-loader" data-ai-loader role="status" aria-live="polite">
                   <div class="ai-loader-lottie" data-ai-lottie></div>
-                  <div class="ai-loader-text">Generating AI image...</div>
+                  <div class="ai-loader-text" data-ai-loader-text>Generating AI image...</div>
                 </div>
-              </div>
+              </div>`;
+          return `
+            <article class="card">
+              <span class="badge">#${i+1}</span>
+              ${media}
               <div class="card-body">
                 <h3>${title||'Car'}</h3>
                 <p>${reason}</p>
@@ -839,8 +885,38 @@
     // car cards, inline opaque styles
     const carsHtml = picks.map((c,i)=>{
       const title  = `${c.brand??''} ${c.model??''}`.trim();
+      const knownImage = getKnownImage(c?.brand ?? "", c?.model ?? "", c?.image ?? "");
       const fallback = cardImagePlaceholder(c);
       const reason = c.reason ?? '';
+      const media = knownImage
+        ? `
+          <div class="ai-media ai-media-modal" data-ai-shell>
+            <img class="card-img" src="${knownImage}" alt="${title||'Car image'}"
+              style="
+                width:100%;
+                height:190px;
+                object-fit:cover;
+                display:block;
+                background:var(--bg-darker);
+                border-radius:12px;
+              "/>
+          </div>`
+        : `
+          <div class="ai-media ai-media-modal" data-ai-shell>
+            <img class="card-img" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" src="${fallback}" alt="${title||'Car image'}"
+              style="
+                width:100%;
+                height:190px;
+                object-fit:cover;
+                display:block;
+                background:var(--bg-darker);
+                border-radius:12px;
+              "/>
+            <div class="ai-loader ai-media-modal" data-ai-loader role="status" aria-live="polite">
+              <div class="ai-loader-lottie" data-ai-lottie></div>
+              <div class="ai-loader-text" data-ai-loader-text>Generating AI image...</div>
+            </div>
+          </div>`;
 
       return `
         <article
@@ -872,21 +948,7 @@
             "
           >#${i+1}</span>
 
-          <div class="ai-media ai-media-modal" data-ai-shell>
-            <img class="card-img" data-ai="1" data-brand="${encodeAttr(c?.brand ?? '')}" data-model="${encodeAttr(c?.model ?? '')}" src="${fallback}" alt="${title||'Car image'}"
-              style="
-                width:100%;
-                height:190px;
-                object-fit:cover;
-                display:block;
-                background:var(--bg-darker);
-                border-radius:12px;
-              "/>
-            <div class="ai-loader ai-media-modal" data-ai-loader role="status" aria-live="polite">
-              <div class="ai-loader-lottie" data-ai-lottie></div>
-              <div class="ai-loader-text">Generating AI image...</div>
-            </div>
-          </div>
+          ${media}
 
           <div>
             <h3

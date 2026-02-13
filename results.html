@@ -30,12 +30,16 @@
   const NETLIFY_BASE = `${FUNCTIONS_ORIGIN}/.netlify/functions`;
   const CAR_IMAGE_URL = `${NETLIFY_BASE}/carImageCORS`;
   const AI_POLL_MS = 4000;
+  const IMAGE_CACHE_KEY = "carImageCacheV1";
   const LOTTIE_ANIMATION_URL = "https://assets10.lottiefiles.com/packages/lf20_usmfx6bp.json";
 
   // restore quiz data from sessionStorage
   function safeJSON(str){ try { return JSON.parse(str || "null"); } catch { return null; } }
   const picks   = safeJSON(sessionStorage.getItem("carPicks"))   || [];
   const answers = safeJSON(sessionStorage.getItem("carAnswers")) || {};
+  const imageCache = safeJSON(sessionStorage.getItem(IMAGE_CACHE_KEY))
+    || safeJSON(localStorage.getItem(IMAGE_CACHE_KEY))
+    || {};
 
   // helpers for rendering
   function esc(s){
@@ -53,6 +57,35 @@
   }
   function decodeAttr(val){
     try { return decodeURIComponent(String(val ?? "")); } catch { return String(val ?? ""); }
+  }
+  function carKey(brand, model){
+    return `${brand || ""}::${model || ""}`.toLowerCase().replace(/[^a-z0-9:]+/g, "");
+  }
+  function persistImageCache(){
+    const raw = JSON.stringify(imageCache);
+    try { sessionStorage.setItem(IMAGE_CACHE_KEY, raw); } catch (_) {}
+    try { localStorage.setItem(IMAGE_CACHE_KEY, raw); } catch (_) {}
+  }
+  function rememberDisplayedImage(brand, model, url){
+    const key = carKey(brand, model);
+    if (!key || !url) return;
+    imageCache[key] = url;
+    persistImageCache();
+
+    const stored = safeJSON(sessionStorage.getItem("carPicks")) || [];
+    if (!Array.isArray(stored) || !stored.length) return;
+
+    let changed = false;
+    const next = stored.map((item) => {
+      const k = carKey(item?.brand || "", item?.model || "");
+      if (k !== key) return item;
+      if (item?.image === url) return item;
+      changed = true;
+      return { ...(item || {}), image: url };
+    });
+    if (changed) {
+      try { sessionStorage.setItem("carPicks", JSON.stringify(next)); } catch (_) {}
+    }
   }
   function svgCardImage(title, subtitle){
     const safeTitle = String(title || "Car").replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 28);
@@ -148,6 +181,10 @@
       }
     }
   }
+  function setLoaderText(card, text) {
+    const label = card?.querySelector("[data-ai-loader-text]");
+    if (label) label.textContent = String(text || "");
+  }
   function startLoaderAnimation(card) {
     const loader = card?.querySelector("[data-ai-loader]");
     const mount = card?.querySelector("[data-ai-lottie]");
@@ -170,6 +207,7 @@
     let firstPoll = true;
 
     setLoaderVisible(card, true);
+    setLoaderText(card, "Generating AI image...");
     startLoaderAnimation(card);
 
     while (true) {
@@ -187,7 +225,13 @@
         if (statusRes.ok && payload?.status === "ready" && payload?.url) {
           await preloadImage(payload.url, 12000);
           imgEl.src = payload.url;
+          rememberDisplayedImage(brand, model, payload.url);
           setLoaderVisible(card, false);
+          return;
+        }
+        if (payload?.status === "error") {
+          setLoaderText(card, "AI image unavailable right now.");
+          setLoaderVisible(card, true);
           return;
         }
       } catch (_) {}
@@ -435,7 +479,7 @@
             <img class="card-img" src="${fallbackUrl}" alt="${brand} ${model}" loading="lazy" data-ai="1" data-brand="${encodeAttr(brandRaw)}" data-model="${encodeAttr(modelRaw)}">
             <div class="ai-loader" data-ai-loader role="status" aria-live="polite">
               <div class="ai-loader-lottie" data-ai-lottie></div>
-              <div class="ai-loader-text">Generating AI image...</div>
+              <div class="ai-loader-text" data-ai-loader-text>Generating AI image...</div>
             </div>
           </div>
           <div class="rank">#${i+1} match</div>
