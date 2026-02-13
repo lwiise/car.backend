@@ -12,6 +12,9 @@ const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 const IMAGE_SIZE = process.env.OPENAI_IMAGE_SIZE || "1536x1024";
 const IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "high";
 const IMAGE_FORMAT = process.env.OPENAI_IMAGE_FORMAT || "png";
+const TRANSIENT_IMAGE_SIZE = process.env.OPENAI_TRANSIENT_IMAGE_SIZE || "1024x1024";
+const TRANSIENT_IMAGE_QUALITY = process.env.OPENAI_TRANSIENT_IMAGE_QUALITY || "medium";
+const TRANSIENT_IMAGE_FORMAT = process.env.OPENAI_TRANSIENT_IMAGE_FORMAT || "webp";
 const STUDIO_STYLE_PROMPT = [
   "Photorealistic automotive studio photography.",
   "3/4 front view composition, centered subject.",
@@ -75,6 +78,11 @@ function publicUrl(supa, filePath) {
   return supa.storage.from(BUCKET).getPublicUrl(filePath).data.publicUrl;
 }
 
+function makeDataUrl(contentType, buffer) {
+  const ct = String(contentType || "image/png");
+  return `data:${ct};base64,${buffer.toString("base64")}`;
+}
+
 export const handler = async (event) => {
   try {
     if (event.httpMethod === "OPTIONS") {
@@ -109,12 +117,20 @@ export const handler = async (event) => {
       return jsonResponse(400, { error: "invalid_car_name" }, event);
     }
 
-    const supa = getAdminClient();
+    let supa = null;
+    try {
+      supa = getAdminClient();
+    } catch (err) {
+      console.error("[carImageGenerate] getAdminClient failed:", err?.message || err);
+    }
+
     const filePath = `${THEME_VERSION}/${slug}.${IMAGE_FORMAT}`;
 
-    const exists = await fileExists(supa, filePath);
-    if (exists && !force) {
-      return jsonResponse(200, { url: publicUrl(supa, filePath), cached: true }, event);
+    if (supa) {
+      const exists = await fileExists(supa, filePath);
+      if (exists && !force) {
+        return jsonResponse(200, { url: publicUrl(supa, filePath), cached: true }, event);
+      }
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
@@ -132,37 +148,67 @@ export const handler = async (event) => {
 
     const client = new OpenAI({ apiKey });
     const prompt = buildPrompt(brand, model);
+    const useTransientDelivery = !supa;
+    const outputFormat = useTransientDelivery ? TRANSIENT_IMAGE_FORMAT : IMAGE_FORMAT;
+    const size = useTransientDelivery ? TRANSIENT_IMAGE_SIZE : IMAGE_SIZE;
+    const quality = useTransientDelivery ? TRANSIENT_IMAGE_QUALITY : IMAGE_QUALITY;
 
     const result = await client.images.generate({
       model: IMAGE_MODEL,
       prompt,
-      size: IMAGE_SIZE,
-      quality: IMAGE_QUALITY,
-      output_format: IMAGE_FORMAT
+      size,
+      quality,
+      output_format: outputFormat
     });
 
     const img = result?.data?.[0];
+    if (useTransientDelivery && img?.url) {
+      return jsonResponse(200, {
+        url: img.url,
+        cached: false,
+        transient: true
+      }, event);
+    }
+
     let buffer;
+    let contentType = `image/${outputFormat}`;
     if (img?.b64_json) {
       buffer = Buffer.from(img.b64_json, "base64");
     } else if (img?.url) {
       const res = await fetch(img.url);
+      if (!res.ok) {
+        return jsonResponse(500, { error: `image_download_failed_${res.status}` }, event);
+      }
+      contentType = res.headers.get("content-type") || contentType;
       const arr = await res.arrayBuffer();
       buffer = Buffer.from(arr);
     } else {
       return jsonResponse(500, { error: "image_response_empty" }, event);
     }
 
+    if (!supa) {
+      return jsonResponse(200, {
+        url: makeDataUrl(contentType, buffer),
+        cached: false,
+        transient: true
+      }, event);
+    }
+
     await ensureBucket(supa);
     const { error: upErr } = await supa.storage
       .from(BUCKET)
       .upload(filePath, buffer, {
-        contentType: `image/${IMAGE_FORMAT}`,
+        contentType,
         upsert: true,
         cacheControl: "31536000"
       });
     if (upErr) {
-      return jsonResponse(500, { error: "storage_upload_failed" }, event);
+      return jsonResponse(200, {
+        url: makeDataUrl(contentType, buffer),
+        cached: false,
+        transient: true,
+        warning: "storage_upload_failed"
+      }, event);
     }
 
     return jsonResponse(200, {
@@ -171,6 +217,9 @@ export const handler = async (event) => {
     }, event);
   } catch (err) {
     console.error("[carImageGenerate] handler crash:", err);
-    return jsonResponse(500, { error: "internal_error" }, event);
+    return jsonResponse(500, {
+      error: "internal_error",
+      detail: err?.message || String(err)
+    }, event);
   }
 };

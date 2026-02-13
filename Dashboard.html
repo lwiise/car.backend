@@ -583,9 +583,8 @@
           return;
         }
         if (payload?.status === "error") {
-          setLoaderText(imgEl, "AI image unavailable right now.");
+          setLoaderText(imgEl, "AI image delayed, retrying...");
           setLoaderVisible(imgEl, true);
-          return;
         }
       } catch (_) {}
 

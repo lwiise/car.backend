@@ -123,8 +123,12 @@ async function triggerSyncGenerate(brand, model, force) {
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (_) {}
 
-    if (res.ok && data?.url) {
-      return { status: "ready", url: data.url, cached: Boolean(data.cached) };
+    if (res.ok && (data?.url || data?.data_url)) {
+      return {
+        status: "ready",
+        url: data?.url || data?.data_url,
+        cached: Boolean(data?.cached)
+      };
     }
     if (!res.ok) {
       return { status: "error", error: data?.error || `generate_http_${res.status}` };

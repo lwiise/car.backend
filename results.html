@@ -230,9 +230,8 @@
           return;
         }
         if (payload?.status === "error") {
-          setLoaderText(card, "AI image unavailable right now.");
+          setLoaderText(card, "AI image delayed, retrying...");
           setLoaderVisible(card, true);
-          return;
         }
       } catch (_) {}
 
