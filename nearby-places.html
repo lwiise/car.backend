@@ -38,6 +38,24 @@
       box-shadow: 0 12px 40px rgba(40, 34, 26, 0.08);
       overflow: hidden;
     }
+    /* Right-align the filter row (Category / Brand / Travel Mode / KM)
+       inside the CLA / Nearby Places block. legacy-detail-pages.css
+       uses a 4-col grid that fills the full width; we override to a
+       flex row that pushes to the right of the section. */
+    @media (min-width: 861px){
+      body.is-cla #pf2Frame .pf2-tabs{
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        column-gap: 12px;
+        row-gap: 8px;
+        width: 100%;
+      }
+      body.is-cla #pf2Frame .pf2-selectWrap{
+        flex: 0 0 auto;
+        min-width: 160px;
+      }
+    }
   </style>
 </head>
 <body class="is-solo is-cla" data-page-type="cla">
