@@ -1,0 +1,219 @@
+:root {
+  --menu-surface: #f2f3f6;
+  --menu-label: #212633;
+  --launcher-gold: #b99b52;
+}
+
+body.menu-open {
+  overflow: hidden;
+}
+
+.menu-trigger {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  z-index: 90;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: var(--launcher-gold);
+  color: #000;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.menu-trigger:hover {
+  transform: translateY(-1px);
+}
+
+.menu-trigger:focus-visible {
+  outline: 2px solid rgba(0, 0, 0, 0.55);
+  outline-offset: 3px;
+}
+
+.menu-trigger.is-open {
+  background: var(--launcher-gold);
+  color: #000;
+  box-shadow: 0 12px 28px rgba(77, 57, 16, 0.22);
+}
+
+.menu-trigger-dots {
+  display: grid;
+  grid-template-columns: repeat(3, 4px);
+  grid-auto-rows: 4px;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+}
+
+.menu-trigger-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  display: block;
+}
+
+.launcher-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(16, 20, 27, 0.06);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.22s ease, visibility 0s linear 0.22s;
+  overflow: auto;
+}
+
+.launcher-overlay.is-open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 0.22s ease, visibility 0s linear 0s;
+}
+
+.launcher-shell {
+  width: min(392px, calc(100% - 24px));
+  margin: 0 18px 0 auto;
+  padding: 72px 0 18px;
+}
+
+.launcher-panel {
+  width: 100%;
+  max-height: min(660px, calc(100vh - 92px));
+  overflow: auto;
+  border-radius: 30px;
+  background: var(--menu-surface);
+  box-shadow: 0 20px 56px rgba(20, 26, 37, 0.18);
+  padding: 22px 16px 18px;
+  transform: translateY(14px);
+  transition: transform 0.22s ease, opacity 0.22s ease;
+  opacity: 0;
+}
+
+.launcher-overlay.is-open .launcher-panel {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 8px;
+  align-items: start;
+}
+
+.launcher-card {
+  appearance: none;
+  border: none;
+  background: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px 10px;
+  border-radius: 16px;
+  transition: transform 0.2s ease, background 0.2s ease;
+  cursor: pointer;
+  color: inherit;
+  text-decoration: none;
+}
+
+.launcher-card:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.launcher-card:focus-visible {
+  outline: 2px solid rgba(17, 17, 17, 0.2);
+  outline-offset: 2px;
+}
+
+.launcher-icon-box {
+  width: 76px;
+  height: 76px;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 8px 18px rgba(28, 31, 41, 0.08);
+  display: grid;
+  place-items: center;
+  padding: 14px;
+}
+
+.launcher-icon-box svg {
+  width: 46px;
+  height: 46px;
+  display: block;
+}
+
+.launcher-card span {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--menu-label);
+  text-align: center;
+  max-width: 88px;
+}
+
+@media (max-width: 1180px) {
+  .launcher-shell {
+    width: min(392px, calc(100% - 24px));
+  }
+}
+
+@media (max-width: 980px) {
+  .launcher-shell {
+    width: min(392px, calc(100% - 24px));
+    margin: 0 12px 0 auto;
+    padding: 72px 0 20px;
+  }
+}
+
+@media (max-width: 560px) {
+  .menu-trigger {
+    top: 12px;
+    right: 14px;
+  }
+
+  .launcher-shell {
+    width: calc(100% - 16px);
+    margin: 0 8px;
+    padding: 68px 0 16px;
+  }
+
+  .launcher-panel {
+    border-radius: 22px;
+    padding: 18px 12px 16px;
+  }
+
+  .launcher-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 8px;
+  }
+
+  .launcher-icon-box {
+    width: 72px;
+    height: 72px;
+    padding: 13px;
+  }
+
+  .launcher-card span {
+    font-size: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-trigger,
+  .launcher-overlay,
+  .launcher-panel,
+  .launcher-card {
+    transition: none !important;
+  }
+}

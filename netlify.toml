@@ -7,6 +7,16 @@
   node_bundler = "esbuild"
   included_files = ["netlify/functions/**"]
 
+[[redirects]]
+  from = "/nearby"
+  to = "/nearby-places.html"
+  status = 200
+
+[[redirects]]
+  from = "/nearby-places"
+  to = "/nearby-places.html"
+  status = 200
+
 # CORS headers for ALL functions (adds on top of what we send in code)
 [[headers]]
   for = "/.netlify/functions/*"
@@ -14,4 +24,13 @@
     Access-Control-Allow-Origin = "*"              # you can lock to https://scopeonride.webflow.io after it works
     Access-Control-Allow-Methods = "GET, POST, OPTIONS"
     Access-Control-Allow-Headers = "Content-Type, Authorization, X-User-Id, X-User-Email, X-Admin-Email"
+    Access-Control-Max-Age = "86400"
+
+# Allow the Webflow host to load the Nearby Places assets (CSS/JS)
+# when these are embedded cross-origin from carbackendd.netlify.app.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, OPTIONS"
     Access-Control-Max-Age = "86400"

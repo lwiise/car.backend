@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>City AI - Nearby Places</title>
+  <link rel="stylesheet" href="/assets/css/legacy-detail-pages.css" />
+  <link rel="stylesheet" href="/assets/css/public-launcher.css" />
+  <style>
+    /* Standalone Nearby Places page for the City AI / CDA system.
+       Mirrors the layout used by the public CLA / project page so the
+       block ports over with the same look and feel. legacy-detail-pages
+       JS / CSS skip the project chrome it can't find on the page. */
+    body.is-cla { background: #f7f4ee; margin: 0; }
+    body.is-cla .cla-shell {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 32px 24px 48px;
+    }
+    body.is-cla .cla-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    body.is-cla .cla-header h1 {
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 28px;
+      letter-spacing: -0.01em;
+      margin: 0;
+      color: #2e2a23;
+    }
+    body.is-cla #pf2Frame {
+      position: relative;
+      background: #fff;
+      border-radius: 18px;
+      box-shadow: 0 12px 40px rgba(40, 34, 26, 0.08);
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body class="is-solo is-cla" data-page-type="cla">
+  <main class="cla-shell">
+    <header class="cla-header">
+      <h1>Nearby Places</h1>
+    </header>
+
+    <div class="media-panels media-panels-dup" id="pf2Frame">
+      <div class="pf2-tabs" id="pf2Tabs" aria-label="Nearby places controls">
+        <label class="pf2-selectWrap" for="pf2CategorySelect">
+          <span class="pf2-selectLabel">Category</span>
+          <select class="pf2-select pf2-select--dark" id="pf2CategorySelect" aria-label="Nearby places category">
+            <option value="schools" selected>Schools</option>
+            <option value="mosques">Mosques</option>
+            <option value="restaurants">Restaurants</option>
+            <option value="gyms">Gyms</option>
+          </select>
+        </label>
+        <label class="pf2-selectWrap" for="pf2BrandSelect">
+          <span class="pf2-selectLabel">Brand</span>
+          <select class="pf2-select pf2-select--light" id="pf2BrandSelect" aria-label="Brand filter">
+            <option value="">All brands</option>
+          </select>
+        </label>
+        <label class="pf2-selectWrap" for="pf2ModeSelect">
+          <span class="pf2-selectLabel">Travel Mode</span>
+          <select class="pf2-select pf2-select--light" id="pf2ModeSelect" aria-label="Travel mode">
+            <option value="driving" selected>Driving</option>
+            <option value="walking">Walking</option>
+            <option value="cycling">Cycling</option>
+          </select>
+        </label>
+        <label class="pf2-selectWrap" for="pf2RadiusInput">
+          <span class="pf2-selectLabel">KM</span>
+          <input class="pf2-kmInput" id="pf2RadiusInput" type="number" min="1" max="50" step="1" value="10" inputmode="numeric" aria-label="Search radius in kilometers" />
+        </label>
+      </div>
+      <div class="pf2-shell" id="pf2Root">
+        <div class="pf2-toolbar">
+          <button class="pf2-resultsToggle" id="pf2ResultsToggle" type="button" aria-expanded="true">Hide Results</button>
+        </div>
+        <div class="pf2-stage">
+          <div class="pf2-mapWrap">
+            <div class="pf2-locationBar" role="search" aria-label="Search a location on this map">
+              <span class="pf2-locationBar-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+              </span>
+              <input class="pf2-locationBar-input" id="pf2LocationSearch" type="search" placeholder="Search a place to use as the search origin..." autocomplete="off" />
+              <button class="pf2-locationBar-reset" id="pf2LocationReset" type="button" style="display:none;" aria-label="Reset to property location">Reset</button>
+            </div>
+            <div class="pf2-map" id="pf2Map" aria-label="Nearby places map"></div>
+            <div class="pf2-status" id="pf2Status" data-pf2-kind="info">Loading map...</div>
+            <div class="pf2-summary" id="pf2Summary">Select a place to see route details.</div>
+          </div>
+          <aside class="pf2-results" id="pf2ResultsPanel" aria-label="Nearby places results">
+            <div class="pf2-resultsHead">
+              <span>Nearby Places</span>
+              <span id="pf2Count">0</span>
+            </div>
+            <div class="pf2-resultsList" id="pf2ResultsList"></div>
+          </aside>
+        </div>
+        <div class="pf2-locationLink-row">
+          <label class="pf2-locationLink-label" for="pf2LocationLink">Paste a Google Maps link or address</label>
+          <div class="pf2-locationLink-control">
+            <input class="pf2-locationLink-input" id="pf2LocationLink" type="text" placeholder="https://maps.google.com/...  or  24.7136, 46.6753  or  King Fahd Rd, Riyadh" autocomplete="off" />
+            <button class="pf2-locationLink-btn" id="pf2LocationLinkBtn" type="button">Locate</button>
+          </div>
+          <div class="pf2-locationLink-error" id="pf2LocationLinkError" role="status" aria-live="polite" style="display:none;"></div>
+          <div class="pf2-locationLink-hint">Tip: drag the purple pin on the map to fine-tune the location.</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/assets/js/app-config.js"></script>
+  <script src="/assets/js/public-launcher.js"></script>
+  <script type="module" src="/assets/js/legacy-detail-pages.js"></script>
+  <script src="/assets/js/brand-logo.js"></script>
+</body>
+</html>
