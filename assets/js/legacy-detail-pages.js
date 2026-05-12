@@ -71,6 +71,7 @@ let developerNavDropdownEnabled = false;
 let currentViewerProfile = null;
 let currentViewerProfilePromise = null;
 let projectMediaFullscreenKeydownBound = false;
+let projectMediaFullscreenState = null;
 
 let _mapReadyResolve;
 const mapReadyPromise = new Promise((resolve) => { _mapReadyResolve = resolve; });
@@ -747,21 +748,33 @@ function setProjectMediaFullscreen(active) {
   const root = getProjectMediaFullscreenRoot();
   if (!root) return;
   if (active) {
-    if (!("mediaFullscreenPreviousStyle" in root.dataset)) {
-      root.dataset.mediaFullscreenPreviousStyle = root.getAttribute("style") || "";
+    if (!projectMediaFullscreenState) {
+      const placeholder = document.createComment("project media fullscreen placeholder");
+      root.parentNode?.insertBefore(placeholder, root);
+      projectMediaFullscreenState = {
+        root,
+        placeholder,
+        previousStyle: root.getAttribute("style") || "",
+      };
+      document.body.appendChild(root);
     }
     root.classList.add("is-media-fullscreen");
     document.body.classList.add("media-fullscreen-active");
     applyProjectMediaFullscreenInlineStyles(root);
   } else {
-    root.classList.remove("is-media-fullscreen");
+    const state = projectMediaFullscreenState;
+    const activeRoot = state?.root || root;
+    activeRoot.classList.remove("is-media-fullscreen");
     document.body.classList.remove("media-fullscreen-active");
 
-    if ("mediaFullscreenPreviousStyle" in root.dataset) {
-      const previousStyle = root.dataset.mediaFullscreenPreviousStyle;
-      if (previousStyle) root.setAttribute("style", previousStyle);
-      else root.removeAttribute("style");
-      delete root.dataset.mediaFullscreenPreviousStyle;
+    if (state) {
+      if (state.placeholder?.parentNode) {
+        state.placeholder.parentNode.insertBefore(activeRoot, state.placeholder);
+        state.placeholder.remove();
+      }
+      if (state.previousStyle) activeRoot.setAttribute("style", state.previousStyle);
+      else activeRoot.removeAttribute("style");
+      projectMediaFullscreenState = null;
     }
 
     requestAnimationFrame(() => applyProjectViewportLayout());
