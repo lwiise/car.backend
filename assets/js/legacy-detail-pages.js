@@ -70,6 +70,7 @@ let developerMapsSelectedId = null;
 let developerNavDropdownEnabled = false;
 let currentViewerProfile = null;
 let currentViewerProfilePromise = null;
+let projectMediaFullscreenKeydownBound = false;
 
 let _mapReadyResolve;
 const mapReadyPromise = new Promise((resolve) => { _mapReadyResolve = resolve; });
@@ -251,12 +252,16 @@ function applyProjectViewportLayout() {
   soloRoot.style.position = "relative";
   soloRoot.style.overflow = "visible";
 
-  primaryFrame.style.setProperty("position", "relative", "important");
-  primaryFrame.style.setProperty("z-index", "20", "important");
-  primaryFrame.style.setProperty("top", "auto", "important");
-  primaryFrame.style.setProperty("margin-top", "0px", "important");
-  primaryFrame.style.setProperty("transform", "none", "important");
-  primaryFrame.style.setProperty("margin-bottom", "0px", "important");
+  if (primaryFrame.classList.contains("is-media-fullscreen")) {
+    applyProjectMediaFullscreenInlineStyles(primaryFrame);
+  } else {
+    primaryFrame.style.setProperty("position", "relative", "important");
+    primaryFrame.style.setProperty("z-index", "20", "important");
+    primaryFrame.style.setProperty("top", "auto", "important");
+    primaryFrame.style.setProperty("margin-top", "0px", "important");
+    primaryFrame.style.setProperty("transform", "none", "important");
+    primaryFrame.style.setProperty("margin-bottom", "0px", "important");
+  }
 
   if (infoFrame) {
     infoFrame.style.setProperty("margin-top", "0px", "important");
@@ -711,6 +716,113 @@ function bindModalUi() {
   });
 }
 
+function getProjectMediaFullscreenRoot() {
+  if (!mediaStage) return null;
+  const primaryFrame = byId("projectPrimaryFrame");
+  if (primaryFrame && primaryFrame.contains(mediaStage)) return primaryFrame;
+  return mediaStage.closest(".media-panels") || mediaStage.parentElement;
+}
+
+function applyProjectMediaFullscreenInlineStyles(root) {
+  if (!root) return;
+  root.style.setProperty("position", "fixed", "important");
+  root.style.setProperty("top", "0", "important");
+  root.style.setProperty("right", "0", "important");
+  root.style.setProperty("bottom", "0", "important");
+  root.style.setProperty("left", "0", "important");
+  root.style.setProperty("width", "100vw", "important");
+  root.style.setProperty("height", "100vh", "important");
+  root.style.setProperty("min-height", "100vh", "important");
+  root.style.setProperty("max-width", "none", "important");
+  root.style.setProperty("margin", "0", "important");
+  root.style.setProperty("z-index", "3000", "important");
+  root.style.setProperty("display", "flex", "important");
+  root.style.setProperty("flex-direction", "column", "important");
+  root.style.setProperty("box-sizing", "border-box", "important");
+  root.style.setProperty("overflow", "hidden", "important");
+  root.style.setProperty("transform", "none", "important");
+}
+
+function setProjectMediaFullscreen(active) {
+  const root = getProjectMediaFullscreenRoot();
+  if (!root) return;
+  if (active) {
+    if (!("mediaFullscreenPreviousStyle" in root.dataset)) {
+      root.dataset.mediaFullscreenPreviousStyle = root.getAttribute("style") || "";
+    }
+    root.classList.add("is-media-fullscreen");
+    document.body.classList.add("media-fullscreen-active");
+    applyProjectMediaFullscreenInlineStyles(root);
+  } else {
+    root.classList.remove("is-media-fullscreen");
+    document.body.classList.remove("media-fullscreen-active");
+
+    if ("mediaFullscreenPreviousStyle" in root.dataset) {
+      const previousStyle = root.dataset.mediaFullscreenPreviousStyle;
+      if (previousStyle) root.setAttribute("style", previousStyle);
+      else root.removeAttribute("style");
+      delete root.dataset.mediaFullscreenPreviousStyle;
+    }
+
+    requestAnimationFrame(() => applyProjectViewportLayout());
+  }
+
+  const button = mediaStage?.querySelector(".media-fullscreen-toggle");
+  if (button) {
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", active ? "Exit fullscreen media" : "Show media fullscreen");
+  }
+
+  requestAnimationFrame(() => {
+    window.dispatchEvent(new Event("resize"));
+  });
+}
+
+function ensureProjectMediaFullscreenToggle() {
+  if (!mediaStage) return;
+  const root = getProjectMediaFullscreenRoot();
+  if (!root) return;
+
+  mediaStage.classList.add("has-media-fullscreen-toggle");
+  let button = mediaStage.querySelector(".media-fullscreen-toggle");
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "media-fullscreen-toggle";
+    button.innerHTML = `
+      <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 9V4h5"/><path d="M20 9V4h-5"/>
+        <path d="M4 15v5h5"/><path d="M20 15v5h-5"/>
+      </svg>
+      <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 4v5H4"/><path d="M15 4v5h5"/>
+        <path d="M9 20v-5H4"/><path d="M15 20v-5h5"/>
+      </svg>
+    `;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setProjectMediaFullscreen(!root.classList.contains("is-media-fullscreen"));
+    });
+    mediaStage.appendChild(button);
+  }
+
+  const isFullscreen = root.classList.contains("is-media-fullscreen");
+  button.setAttribute("aria-pressed", String(isFullscreen));
+  button.setAttribute("aria-label", isFullscreen ? "Exit fullscreen media" : "Show media fullscreen");
+
+  if (!projectMediaFullscreenKeydownBound) {
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const currentRoot = getProjectMediaFullscreenRoot();
+      if (currentRoot?.classList.contains("is-media-fullscreen")) {
+        setProjectMediaFullscreen(false);
+      }
+    });
+    projectMediaFullscreenKeydownBound = true;
+  }
+}
+
 function renderProjectImageMedia(project) {
   if (!mediaStage) return;
   const total = rrImages.length || 1;
@@ -732,6 +844,7 @@ function renderProjectImageMedia(project) {
     rrIndex = rrIndex + 1;
     renderProjectImageMedia(project);
   });
+  ensureProjectMediaFullscreenToggle();
 }
 
 function mount360Panorama(container, panoramaUrl) {
@@ -772,6 +885,7 @@ function updateProjectMedia(project, mode) {
         <source src="${encodeURL(project.video)}" type="video/mp4">
       </video>
     `;
+    ensureProjectMediaFullscreenToggle();
     return;
   }
 
@@ -779,6 +893,7 @@ function updateProjectMedia(project, mode) {
     const url = String(project.video360 || project.video || "").trim();
     if (!url) {
       mediaStage.innerHTML = `<div class="legacy-empty" style="display:flex;align-items:center;justify-content:center;height:100%;width:100%;color:#888;background:#000;">360 video unavailable.</div>`;
+      ensureProjectMediaFullscreenToggle();
       return;
     }
     // Inline all critical layout/sizing styles so the player and bar are
@@ -842,6 +957,7 @@ function updateProjectMedia(project, mode) {
       video.addEventListener("ended", () => { syncButton(); writeRangeFromVideo(); });
       video.addEventListener("error", () => {
         mediaStage.innerHTML = `<div class="legacy-empty" style="display:flex;align-items:center;justify-content:center;height:100%;width:100%;color:#888;background:#000;">360 video failed to load.</div>`;
+        ensureProjectMediaFullscreenToggle();
       });
     }
 
@@ -882,11 +998,13 @@ function updateProjectMedia(project, mode) {
     }
 
     syncButton();
+    ensureProjectMediaFullscreenToggle();
     return;
   }
 
   if (mode === "360-inside") {
     mount360Panorama(mediaStage, project.media360Inside);
+    ensureProjectMediaFullscreenToggle();
     return;
   }
 
@@ -907,6 +1025,7 @@ function updateProjectMedia(project, mode) {
         environment-image="neutral">
       </model-viewer>
     `;
+    ensureProjectMediaFullscreenToggle();
     return;
   }
 
@@ -921,6 +1040,7 @@ function updateProjectMedia(project, mode) {
         style="width:100%;height:100%;border:0;display:block;background:#000;">
       </iframe>
     `;
+    ensureProjectMediaFullscreenToggle();
     return;
   }
 
@@ -1043,6 +1163,7 @@ function updateProjectMedia(project, mode) {
     });
 
     sync();
+    ensureProjectMediaFullscreenToggle();
     return;
   }
 

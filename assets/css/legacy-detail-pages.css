@@ -591,12 +591,93 @@ body.is-solo .mode-btn:hover{
   background:#000;
 }
 
+body.media-fullscreen-active{
+  overflow:hidden;
+}
+
+#projectPrimaryFrame.is-media-fullscreen,
+.media-panels.is-media-fullscreen{
+  position:fixed !important;
+  inset:0 !important;
+  width:100vw !important;
+  height:100vh !important;
+  min-height:100vh !important;
+  max-width:none !important;
+  margin:0 !important;
+  z-index:3000 !important;
+  display:flex !important;
+  flex-direction:column !important;
+  box-sizing:border-box !important;
+  overflow:hidden !important;
+}
+
+body.is-solo #projectPrimaryFrame.is-media-fullscreen,
+body.is-solo .solo > .media-panels.is-media-fullscreen:first-child,
+body.is-solo .solo > .media-panels.is-media-fullscreen:first-of-type{
+  height:100vh !important;
+}
+
+#projectPrimaryFrame.is-media-fullscreen .media-stage,
+.media-panels.is-media-fullscreen .media-stage{
+  flex:1 1 auto !important;
+  height:auto !important;
+  min-height:0 !important;
+  aspect-ratio:auto !important;
+}
+
 .media-stage img,.media-stage video,.media-stage model-viewer{
   width:100%;
   height:100%;
   object-fit:cover;
   display:block;
 }
+
+.media-fullscreen-toggle{
+  position:absolute;
+  right:14px;
+  bottom:14px;
+  z-index:12;
+  width:46px;
+  height:46px;
+  border:none;
+  border-radius:10px;
+  background:rgba(20,20,20,.82);
+  color:#fff;
+  display:grid;
+  place-items:center;
+  cursor:pointer;
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+  transition:background 160ms ease, transform 160ms ease;
+  padding:0;
+}
+
+.media-fullscreen-toggle:hover{
+  background:rgba(0,0,0,.92);
+  transform:translateY(-1px);
+}
+
+.media-fullscreen-toggle:focus-visible{
+  outline:2px solid rgba(255,255,255,.82);
+  outline-offset:3px;
+}
+
+.media-fullscreen-toggle svg{
+  width:22px;
+  height:22px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:2;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+
+.media-fullscreen-toggle .icon-collapse{ display:none; }
+#projectPrimaryFrame.is-media-fullscreen .media-fullscreen-toggle .icon-expand,
+.media-panels.is-media-fullscreen .media-fullscreen-toggle .icon-expand{ display:none; }
+#projectPrimaryFrame.is-media-fullscreen .media-fullscreen-toggle .icon-collapse,
+.media-panels.is-media-fullscreen .media-fullscreen-toggle .icon-collapse{ display:block; }
+.media-stage.has-media-fullscreen-toggle .rr-count{ right:68px; }
 
 .rr-nav{
   position:absolute;
