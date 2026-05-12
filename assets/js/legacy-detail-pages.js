@@ -719,9 +719,11 @@ function bindModalUi() {
 
 function getProjectMediaFullscreenRoot() {
   if (!mediaStage) return null;
+  const mediaPanel = mediaStage.closest(".media-panels");
+  if (mediaPanel) return mediaPanel;
   const primaryFrame = byId("projectPrimaryFrame");
   if (primaryFrame && primaryFrame.contains(mediaStage)) return primaryFrame;
-  return mediaStage.closest(".media-panels") || mediaStage.parentElement;
+  return mediaStage.parentElement;
 }
 
 function applyProjectMediaFullscreenInlineStyles(root) {
