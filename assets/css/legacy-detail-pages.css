@@ -591,20 +591,45 @@ body.is-solo .mode-btn:hover{
   background:#000;
 }
 
+html.media-fullscreen-active,
 body.media-fullscreen-active{
-  overflow:hidden;
+  overflow:hidden !important;
 }
 
-#projectPrimaryFrame.is-media-fullscreen,
-.media-panels.is-media-fullscreen{
+.project-media-fullscreen-dialog{
   position:fixed !important;
   inset:0 !important;
   width:100vw !important;
   height:100vh !important;
-  min-height:100vh !important;
+  max-width:none !important;
+  max-height:none !important;
+  margin:0 !important;
+  padding:0 !important;
+  border:0 !important;
+  background:transparent !important;
+  overflow:hidden !important;
+  z-index:2147483647 !important;
+  box-sizing:border-box !important;
+  display:flex !important;
+  align-items:stretch !important;
+  justify-content:stretch !important;
+}
+
+.project-media-fullscreen-dialog::backdrop{
+  background:transparent;
+}
+
+#projectPrimaryFrame.is-media-fullscreen,
+.media-panels.is-media-fullscreen,
+.is-media-fullscreen{
+  position:relative !important;
+  inset:auto !important;
+  width:100% !important;
+  height:100% !important;
+  min-height:100% !important;
   max-width:none !important;
   margin:0 !important;
-  z-index:3000 !important;
+  z-index:1 !important;
   display:flex !important;
   flex-direction:column !important;
   box-sizing:border-box !important;
@@ -618,7 +643,8 @@ body.is-solo .solo > .media-panels.is-media-fullscreen:first-of-type{
 }
 
 #projectPrimaryFrame.is-media-fullscreen .media-stage,
-.media-panels.is-media-fullscreen .media-stage{
+.media-panels.is-media-fullscreen .media-stage,
+.is-media-fullscreen .media-stage{
   flex:1 1 auto !important;
   height:auto !important;
   min-height:0 !important;
@@ -674,9 +700,11 @@ body.is-solo .solo > .media-panels.is-media-fullscreen:first-of-type{
 
 .media-fullscreen-toggle .icon-collapse{ display:none; }
 #projectPrimaryFrame.is-media-fullscreen .media-fullscreen-toggle .icon-expand,
-.media-panels.is-media-fullscreen .media-fullscreen-toggle .icon-expand{ display:none; }
+.media-panels.is-media-fullscreen .media-fullscreen-toggle .icon-expand,
+.is-media-fullscreen .media-fullscreen-toggle .icon-expand{ display:none; }
 #projectPrimaryFrame.is-media-fullscreen .media-fullscreen-toggle .icon-collapse,
-.media-panels.is-media-fullscreen .media-fullscreen-toggle .icon-collapse{ display:block; }
+.media-panels.is-media-fullscreen .media-fullscreen-toggle .icon-collapse,
+.is-media-fullscreen .media-fullscreen-toggle .icon-collapse{ display:block; }
 .media-stage.has-media-fullscreen-toggle .rr-count{ right:68px; }
 
 .rr-nav{

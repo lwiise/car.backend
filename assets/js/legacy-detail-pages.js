@@ -721,6 +721,11 @@ function getProjectMediaFullscreenRoot() {
   if (!mediaStage) return null;
   const mediaPanel = mediaStage.closest(".media-panels");
   if (mediaPanel) return mediaPanel;
+  let node = mediaStage.parentElement;
+  while (node && node !== document.body) {
+    if (node.querySelector?.(".mode-tabs") && node.contains(mediaStage)) return node;
+    node = node.parentElement;
+  }
   const primaryFrame = byId("projectPrimaryFrame");
   if (primaryFrame && primaryFrame.contains(mediaStage)) return primaryFrame;
   return mediaStage.parentElement;
@@ -728,22 +733,59 @@ function getProjectMediaFullscreenRoot() {
 
 function applyProjectMediaFullscreenInlineStyles(root) {
   if (!root) return;
-  root.style.setProperty("position", "fixed", "important");
-  root.style.setProperty("top", "0", "important");
-  root.style.setProperty("right", "0", "important");
-  root.style.setProperty("bottom", "0", "important");
-  root.style.setProperty("left", "0", "important");
-  root.style.setProperty("width", "100vw", "important");
-  root.style.setProperty("height", "100vh", "important");
-  root.style.setProperty("min-height", "100vh", "important");
+  root.style.setProperty("position", "relative", "important");
+  root.style.setProperty("top", "auto", "important");
+  root.style.setProperty("right", "auto", "important");
+  root.style.setProperty("bottom", "auto", "important");
+  root.style.setProperty("left", "auto", "important");
+  root.style.setProperty("width", "100%", "important");
+  root.style.setProperty("height", "100%", "important");
+  root.style.setProperty("min-height", "100%", "important");
   root.style.setProperty("max-width", "none", "important");
   root.style.setProperty("margin", "0", "important");
-  root.style.setProperty("z-index", "3000", "important");
+  root.style.setProperty("z-index", "1", "important");
   root.style.setProperty("display", "flex", "important");
   root.style.setProperty("flex-direction", "column", "important");
   root.style.setProperty("box-sizing", "border-box", "important");
   root.style.setProperty("overflow", "hidden", "important");
   root.style.setProperty("transform", "none", "important");
+}
+
+function applyProjectMediaFullscreenOverlayStyles(overlay) {
+  if (!overlay) return;
+  overlay.style.setProperty("position", "fixed", "important");
+  overlay.style.setProperty("inset", "0", "important");
+  overlay.style.setProperty("top", "0", "important");
+  overlay.style.setProperty("right", "0", "important");
+  overlay.style.setProperty("bottom", "0", "important");
+  overlay.style.setProperty("left", "0", "important");
+  overlay.style.setProperty("width", "100vw", "important");
+  overlay.style.setProperty("height", "100vh", "important");
+  overlay.style.setProperty("max-width", "none", "important");
+  overlay.style.setProperty("max-height", "none", "important");
+  overlay.style.setProperty("margin", "0", "important");
+  overlay.style.setProperty("padding", "0", "important");
+  overlay.style.setProperty("border", "0", "important");
+  overlay.style.setProperty("background", "transparent", "important");
+  overlay.style.setProperty("overflow", "hidden", "important");
+  overlay.style.setProperty("z-index", "2147483647", "important");
+  overlay.style.setProperty("box-sizing", "border-box", "important");
+  overlay.style.setProperty("display", "flex", "important");
+  overlay.style.setProperty("align-items", "stretch", "important");
+  overlay.style.setProperty("justify-content", "stretch", "important");
+}
+
+function createProjectMediaFullscreenOverlay() {
+  const overlay = document.createElement("dialog");
+  overlay.className = "project-media-fullscreen-dialog";
+  overlay.setAttribute("aria-label", "Fullscreen media");
+  overlay.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    setProjectMediaFullscreen(false);
+  });
+  applyProjectMediaFullscreenOverlayStyles(overlay);
+  document.body.appendChild(overlay);
+  return overlay;
 }
 
 function setProjectMediaFullscreen(active) {
@@ -753,21 +795,31 @@ function setProjectMediaFullscreen(active) {
     if (!projectMediaFullscreenState) {
       const placeholder = document.createComment("project media fullscreen placeholder");
       root.parentNode?.insertBefore(placeholder, root);
+      const overlay = createProjectMediaFullscreenOverlay();
       projectMediaFullscreenState = {
         root,
+        overlay,
         placeholder,
         previousStyle: root.getAttribute("style") || "",
       };
-      document.body.appendChild(root);
+      overlay.appendChild(root);
+      try {
+        overlay.showModal();
+      } catch (_) {
+        overlay.setAttribute("open", "");
+      }
     }
     root.classList.add("is-media-fullscreen");
     document.body.classList.add("media-fullscreen-active");
+    document.documentElement.classList.add("media-fullscreen-active");
+    applyProjectMediaFullscreenOverlayStyles(projectMediaFullscreenState.overlay);
     applyProjectMediaFullscreenInlineStyles(root);
   } else {
     const state = projectMediaFullscreenState;
     const activeRoot = state?.root || root;
     activeRoot.classList.remove("is-media-fullscreen");
     document.body.classList.remove("media-fullscreen-active");
+    document.documentElement.classList.remove("media-fullscreen-active");
 
     if (state) {
       if (state.placeholder?.parentNode) {
@@ -776,6 +828,10 @@ function setProjectMediaFullscreen(active) {
       }
       if (state.previousStyle) activeRoot.setAttribute("style", state.previousStyle);
       else activeRoot.removeAttribute("style");
+      if (state.overlay?.open && typeof state.overlay.close === "function") {
+        try { state.overlay.close(); } catch (_) { /* noop */ }
+      }
+      state.overlay?.remove();
       projectMediaFullscreenState = null;
     }
 
