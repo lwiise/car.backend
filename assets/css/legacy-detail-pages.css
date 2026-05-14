@@ -2444,6 +2444,168 @@ body.is-solo .link-back{
   cursor:not-allowed;
 }
 
+#pf2Frame .pf2-savebar{
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:space-between;
+  gap:10px;
+  margin:0 0 12px;
+}
+
+#pf2Frame .pf2-savebar-group{
+  display:flex;
+  align-items:end;
+  gap:8px;
+  min-width:min(100%, 420px);
+}
+
+#pf2Frame .pf2-savebar-group--draw{
+  flex:1 1 100%;
+  min-width:0;
+}
+
+#pf2Frame .pf2-savebar-selectWrap{
+  display:flex;
+  flex:1 1 190px;
+  flex-direction:column;
+  gap:5px;
+  min-width:0;
+}
+
+#pf2Frame .pf2-savebar-selectWrap span{
+  color:#64748b;
+  font-size:10px;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+
+#pf2Frame .pf2-savebar-btn,
+#pf2Frame .pf2-savebar-select{
+  min-height:36px;
+  border-radius:10px;
+  border:1px solid rgba(15,23,42,0.12);
+  background:#fff;
+  color:#111827;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  box-shadow:none;
+}
+
+#pf2Frame .pf2-savebar-btn{
+  padding:0 12px;
+  cursor:pointer;
+  white-space:nowrap;
+}
+
+#pf2Frame .pf2-savebar-btn:hover:not(:disabled){
+  background:#0f172a;
+  color:#fff;
+}
+
+#pf2Frame .pf2-savebar-btn.is-active{
+  border-color:#7c3aed;
+  background:#7c3aed;
+  color:#fff;
+}
+
+#pf2Frame .pf2-savebar-btn:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+
+#pf2Frame .pf2-savebar-select{
+  width:100%;
+  padding:0 10px;
+  min-width:0;
+}
+
+.pf2-drawing-name-dialog{
+  width:min(420px, calc(100vw - 32px));
+  border:0;
+  border-radius:18px;
+  padding:0;
+  background:transparent;
+  color:#111827;
+}
+
+.pf2-drawing-name-dialog::backdrop{
+  background:rgba(15,23,42,.42);
+  -webkit-backdrop-filter:blur(5px);
+  backdrop-filter:blur(5px);
+}
+
+.pf2-drawing-name-card{
+  display:grid;
+  gap:16px;
+  padding:22px;
+  border-radius:18px;
+  background:#fff;
+  box-shadow:0 22px 54px rgba(15,23,42,.22);
+}
+
+.pf2-drawing-name-card h3{
+  margin:0;
+  color:#111827;
+  font-size:20px;
+}
+
+.pf2-drawing-name-card label{
+  display:grid;
+  gap:8px;
+}
+
+.pf2-drawing-name-card label span{
+  color:#64748b;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+
+.pf2-drawing-name-card input{
+  width:100%;
+  border:1px solid rgba(15,23,42,.16);
+  border-radius:10px;
+  padding:12px 14px;
+  font:inherit;
+  color:#111827;
+  outline:none;
+}
+
+.pf2-drawing-name-card input:focus{
+  border-color:#7c3aed;
+  box-shadow:0 0 0 3px rgba(124,58,237,.12);
+}
+
+.pf2-drawing-name-actions{
+  display:flex;
+  justify-content:flex-end;
+  gap:10px;
+}
+
+.pf2-drawing-name-actions button{
+  min-height:38px;
+  border:1px solid rgba(15,23,42,.14);
+  border-radius:10px;
+  padding:0 14px;
+  background:#fff;
+  color:#111827;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  cursor:pointer;
+}
+
+.pf2-drawing-name-actions button[type="submit"]{
+  border-color:#0f172a;
+  background:#0f172a;
+  color:#fff;
+}
+
 /* ── Location bar overlay (search above map) ─────────────────── */
 #pf2Frame .pf2-locationBar{
   position:absolute;

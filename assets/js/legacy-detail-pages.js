@@ -1490,6 +1490,50 @@ function initProjectLocationFrame(project) {
   };
   if (!els.map || !els.status || !els.summary || !els.list) return;
 
+  function storageSlug(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 96) || "default";
+  }
+
+  function getKnownWorkspaceFromText(value) {
+    const match = String(value || "").match(/(?:^|[^a-z0-9])(opr|lia)(?:[^a-z0-9]|$)/i);
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  function getPf2StorageScope() {
+    const params = new URLSearchParams(window.location.search);
+    const explicit =
+      pf2Frame.dataset.storageScope ||
+      document.body.dataset.storageScope ||
+      params.get("storageScope") ||
+      params.get("workspace") ||
+      params.get("app") ||
+      params.get("context") ||
+      "";
+    if (explicit) return storageSlug(explicit);
+
+    let referrerScope = "";
+    try {
+      if (document.referrer) {
+        const referrer = new URL(document.referrer);
+        referrerScope =
+          getKnownWorkspaceFromText(`${referrer.hostname} ${referrer.pathname}`) ||
+          `${referrer.hostname}${referrer.pathname}`;
+      }
+    } catch (_) { /* ignore malformed referrers */ }
+
+    const locationScope =
+      getKnownWorkspaceFromText(`${window.location.hostname} ${window.location.pathname}`) ||
+      `${window.location.hostname}${window.location.pathname}`;
+    const projectKey = project?.sourceId || project?.id || pageType || "nearby";
+
+    return storageSlug([referrerScope, locationScope, projectKey].filter(Boolean).join("__"));
+  }
+
   function clampRadiusKm(value) {
     const numeric = Number.parseFloat(value);
     if (!Number.isFinite(numeric)) return DEFAULT_RADIUS_KM;
@@ -1524,8 +1568,21 @@ function initProjectLocationFrame(project) {
     // to the property's stored coords; the search bar, paste field, and
     // draggable pin can all replace it via setOrigin().
     origin: { lat: defaultLat, lng: defaultLng, label: defaultLabel },
+    customDrawingMode: null,
+    customDrawingPoints: [],
+    customDrawingPreview: null,
+    customDrawingListeners: [],
+    mapDoubleClickZoomWasDisabled: false,
+    userDrawingOverlays: new Map(),
+    restoringSnapshot: false,
   };
   let radiusReloadTimer = null;
+  const STORAGE_VERSION = 1;
+  const MAX_SAVED_ITEMS = 80;
+  const storageScope = getPf2StorageScope();
+  const savedMapsStorageKey = `ats:pf2:${storageScope}:savedMaps`;
+  const savedDrawingsStorageKey = `ats:pf2:${storageScope}:savedDrawings`;
+  const customDrawingModes = new Set(["marker", "polyline", "polygon", "circle", "rectangle"]);
 
   const getOriginLatLng = () => ({ lat: state.origin.lat, lng: state.origin.lng });
   const getOriginCoord = () => [state.origin.lng, state.origin.lat];
@@ -1586,6 +1643,857 @@ function initProjectLocationFrame(project) {
 
   function setSummary(text) {
     els.summary.textContent = text || `Current location: ${state.origin.label}`;
+  }
+
+  function safeJsonParse(value, fallback) {
+    try { return JSON.parse(value || ""); } catch (_) { return fallback; }
+  }
+
+  function makeSavedId(prefix) {
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function formatSavedDate(timestamp) {
+    const date = new Date(timestamp || Date.now());
+    return date.toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function readSavedCollection(key) {
+    try {
+      const parsed = safeJsonParse(window.localStorage.getItem(key), []);
+      return Array.isArray(parsed) ? parsed.filter((item) => item?.id && item?.state) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function writeSavedCollection(key, items) {
+    try {
+      const trimmed = (Array.isArray(items) ? items : []).slice(0, MAX_SAVED_ITEMS);
+      window.localStorage.setItem(key, JSON.stringify(trimmed));
+      return true;
+    } catch (_) {
+      setStatus("Could not save. Browser storage is unavailable.", "error");
+      return false;
+    }
+  }
+
+  const getSavedMaps = () => readSavedCollection(savedMapsStorageKey);
+  const getSavedDrawings = () => readSavedCollection(savedDrawingsStorageKey);
+
+  function ensureSelectOption(select, value, label = value) {
+    if (!select || !value) return;
+    const exists = Array.from(select.options || []).some((option) => option.value === value);
+    if (!exists) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label || value;
+      select.appendChild(option);
+    }
+    select.value = value;
+  }
+
+  function latLngLiteralFromValue(value) {
+    if (!value) return null;
+    const lat = typeof value.lat === "function" ? value.lat() : value.lat;
+    const lng = typeof value.lng === "function" ? value.lng() : value.lng;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat, lng };
+  }
+
+  function coordFromLatLng(value) {
+    const literal = latLngLiteralFromValue(value);
+    return literal ? [literal.lng, literal.lat] : null;
+  }
+
+  function pathToCoords(path) {
+    if (!path) return [];
+    const values = typeof path.getArray === "function" ? path.getArray() : path;
+    return (Array.isArray(values) ? values : [])
+      .map((item) => coordFromLatLng(item))
+      .filter(Boolean);
+  }
+
+  function coordsToPath(coords) {
+    return (Array.isArray(coords) ? coords : [])
+      .map((coord) => Array.isArray(coord)
+        ? { lat: Number(coord[1]), lng: Number(coord[0]) }
+        : { lat: Number(coord?.lat), lng: Number(coord?.lng) })
+      .filter((coord) => Number.isFinite(coord.lat) && Number.isFinite(coord.lng));
+  }
+
+  function getMapCamera() {
+    const center = state.map?.getCenter?.();
+    return {
+      center: latLngLiteralFromValue(center) || getOriginLatLng(),
+      zoom: state.map?.getZoom?.() ?? 14,
+      tilt: state.map?.getTilt?.() ?? 0,
+      heading: state.map?.getHeading?.() ?? 0,
+      mapTypeId: state.map?.getMapTypeId?.() || "roadmap",
+    };
+  }
+
+  function applyMapCamera(camera) {
+    if (!state.map || !camera) return;
+    const center = latLngLiteralFromValue(camera.center);
+    if (center) state.map.setCenter(center);
+    if (Number.isFinite(camera.zoom)) state.map.setZoom(Number(camera.zoom));
+    try {
+      if (Number.isFinite(camera.tilt)) state.map.setTilt(Number(camera.tilt));
+    } catch (_) { /* not supported on all map renderers */ }
+    try {
+      if (Number.isFinite(camera.heading)) state.map.setHeading(Number(camera.heading));
+    } catch (_) { /* not supported on all map renderers */ }
+    try {
+      if (camera.mapTypeId) state.map.setMapTypeId(camera.mapTypeId);
+    } catch (_) { /* ignore invalid map type ids */ }
+  }
+
+  function getRouteSnapshot() {
+    return {
+      main: state.mainRoutePolyline ? pathToCoords(state.mainRoutePolyline.getPath()) : [],
+      alternates: state.altRoutePolylines.map((line) => pathToCoords(line.getPath())),
+      summary: els.summary?.textContent || "",
+    };
+  }
+
+  function restoreRouteSnapshot(routes) {
+    clearRoutes();
+    const color = state.aiQuery ? "#9B72F2" : (categoryConfig[state.activeCategory]?.color || "#0a7a73");
+    const mainPath = coordsToPath(routes?.main);
+    if (mainPath.length) {
+      if (!state.mainRoutePolyline) {
+        state.mainRoutePolyline = new google.maps.Polyline({
+          map: state.map,
+          path: mainPath,
+          strokeColor: color,
+          strokeOpacity: 0.9,
+          strokeWeight: 6,
+        });
+      } else {
+        state.mainRoutePolyline.setOptions({ strokeColor: color });
+        state.mainRoutePolyline.setPath(mainPath);
+        state.mainRoutePolyline.setMap(state.map);
+      }
+    }
+    (routes?.alternates || []).forEach((coords) => {
+      const path = coordsToPath(coords);
+      if (!path.length) return;
+      state.altRoutePolylines.push(new google.maps.Polyline({
+        map: state.map,
+        path,
+        strokeColor: color,
+        strokeOpacity: 0.35,
+        strokeWeight: 4,
+      }));
+    });
+    if (routes?.summary) setSummary(routes.summary);
+  }
+
+  function clonePoisForSave(pois) {
+    return (pois || []).map((poi) => ({
+      id: poi.id,
+      name: poi.name,
+      address: poi.address || "",
+      coords: Array.isArray(poi.coords) ? [...poi.coords] : null,
+      duration: poi.duration ?? null,
+      distance: poi.distance ?? null,
+      tags: poi.tags ? { ...poi.tags } : undefined,
+    })).filter((poi) => Array.isArray(poi.coords));
+  }
+
+  function readOverlayOption(overlay, key, fallback) {
+    try {
+      const value = typeof overlay?.get === "function" ? overlay.get(key) : undefined;
+      return value == null ? fallback : value;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function getDrawingStyle(type, overlay) {
+    if (type === "marker") {
+      return {
+        title: readOverlayOption(overlay, "title", ""),
+        label: readOverlayOption(overlay, "label", ""),
+      };
+    }
+    return {
+      strokeColor: readOverlayOption(overlay, "strokeColor", "#7c3aed"),
+      strokeOpacity: readOverlayOption(overlay, "strokeOpacity", 0.85),
+      strokeWeight: readOverlayOption(overlay, "strokeWeight", 3),
+      fillColor: readOverlayOption(overlay, "fillColor", "#7c3aed"),
+      fillOpacity: readOverlayOption(overlay, "fillOpacity", 0.18),
+    };
+  }
+
+  function getOverlayDrawingType(type) {
+    if (!type) return "";
+    return String(type).replace(/^.*\./, "").toLowerCase();
+  }
+
+  function serializeDrawingOverlay(entry) {
+    const type = getOverlayDrawingType(entry.type);
+    const overlay = entry.overlay;
+    if (!overlay) return null;
+    let geometry = null;
+    if (type === "marker") {
+      geometry = { position: coordFromLatLng(overlay.getPosition?.() || overlay.position) };
+    } else if (type === "polyline") {
+      geometry = { path: pathToCoords(overlay.getPath?.()) };
+    } else if (type === "polygon") {
+      const paths = overlay.getPaths?.();
+      geometry = {
+        paths: paths?.getArray?.().map((path) => pathToCoords(path)).filter((path) => path.length) || [],
+      };
+    } else if (type === "circle") {
+      geometry = {
+        center: coordFromLatLng(overlay.getCenter?.()),
+        radius: overlay.getRadius?.() || 0,
+      };
+    } else if (type === "rectangle") {
+      const bounds = overlay.getBounds?.();
+      const ne = bounds?.getNorthEast?.();
+      const sw = bounds?.getSouthWest?.();
+      geometry = { northEast: coordFromLatLng(ne), southWest: coordFromLatLng(sw) };
+    }
+    if (!geometry) return null;
+    return {
+      id: entry.id || makeSavedId("drawing"),
+      type,
+      name: entry.name || "",
+      geometry,
+      style: getDrawingStyle(type, overlay),
+    };
+  }
+
+  function serializeUserDrawings() {
+    return Array.from(state.userDrawingOverlays.values())
+      .map((entry) => serializeDrawingOverlay(entry))
+      .filter(Boolean);
+  }
+
+  function clearUserDrawings() {
+    cancelCustomDrawing();
+    state.userDrawingOverlays.forEach((entry) => {
+      const overlay = entry?.overlay;
+      if (typeof overlay?.setMap === "function") overlay.setMap(null);
+      else if (overlay) overlay.map = null;
+    });
+    state.userDrawingOverlays.clear();
+  }
+
+  function createDrawingOverlayFromSnapshot(item) {
+    if (!state.map || !window.google?.maps || !item) return null;
+    const type = getOverlayDrawingType(item.type);
+    const style = item.style || {};
+    if (type === "marker") {
+      const position = latLngLiteralFromValue({
+        lat: item.geometry?.position?.[1],
+        lng: item.geometry?.position?.[0],
+      });
+      if (!position) return null;
+      return new google.maps.Marker({
+        map: state.map,
+        position,
+        draggable: true,
+        title: item.name || style.title || "Saved marker",
+        label: style.label || undefined,
+      });
+    }
+    const common = {
+      map: state.map,
+      editable: true,
+      draggable: true,
+      strokeColor: style.strokeColor || "#7c3aed",
+      strokeOpacity: style.strokeOpacity ?? 0.85,
+      strokeWeight: style.strokeWeight ?? 3,
+      fillColor: style.fillColor || "#7c3aed",
+      fillOpacity: style.fillOpacity ?? 0.18,
+    };
+    if (type === "polyline") {
+      const path = coordsToPath(item.geometry?.path);
+      return path.length ? new google.maps.Polyline({ ...common, path }) : null;
+    }
+    if (type === "polygon") {
+      const paths = (item.geometry?.paths || []).map(coordsToPath).filter((path) => path.length);
+      return paths.length ? new google.maps.Polygon({ ...common, paths }) : null;
+    }
+    if (type === "circle") {
+      const center = latLngLiteralFromValue({
+        lat: item.geometry?.center?.[1],
+        lng: item.geometry?.center?.[0],
+      });
+      const radius = Number(item.geometry?.radius);
+      return center && Number.isFinite(radius) ? new google.maps.Circle({ ...common, center, radius }) : null;
+    }
+    if (type === "rectangle") {
+      const ne = item.geometry?.northEast;
+      const sw = item.geometry?.southWest;
+      if (!Array.isArray(ne) || !Array.isArray(sw)) return null;
+      return new google.maps.Rectangle({
+        ...common,
+        bounds: {
+          north: Number(ne[1]),
+          east: Number(ne[0]),
+          south: Number(sw[1]),
+          west: Number(sw[0]),
+        },
+      });
+    }
+    return null;
+  }
+
+  function registerUserDrawing(type, overlay, data = {}) {
+    if (!overlay) return null;
+    const id = data.id || makeSavedId("drawing");
+    const drawingType = getOverlayDrawingType(type);
+    if (typeof overlay.setMap === "function") overlay.setMap(state.map);
+    try {
+      if (typeof overlay.setEditable === "function") overlay.setEditable(true);
+      if (typeof overlay.setDraggable === "function") overlay.setDraggable(true);
+    } catch (_) { /* some overlay types do not support these methods */ }
+    const entry = {
+      id,
+      type: drawingType,
+      name: data.name || "",
+      overlay,
+    };
+    state.userDrawingOverlays.set(id, entry);
+    return entry;
+  }
+
+  function restoreUserDrawings(drawings) {
+    clearUserDrawings();
+    (Array.isArray(drawings) ? drawings : []).forEach((item) => {
+      const overlay = createDrawingOverlayFromSnapshot(item);
+      if (overlay) registerUserDrawing(item.type, overlay, { id: item.id, name: item.name });
+    });
+  }
+
+  function captureMapState() {
+    return {
+      version: STORAGE_VERSION,
+      savedAt: Date.now(),
+      scope: storageScope,
+      camera: getMapCamera(),
+      origin: { ...state.origin },
+      filters: {
+        category: state.activeCategory,
+        categoryLabel: categoryConfig[state.activeCategory]?.label || state.activeCategory,
+        brand: state.activeBrand,
+        travelMode: state.activeMode,
+        radiusKm: state.activeRadiusKm,
+        aiQuery: state.aiQuery,
+      },
+      controls: {
+        categoryValue: els.categorySelect?.value || state.activeCategory,
+        brandValue: els.brandSelect?.value || state.activeBrand,
+        modeValue: els.modeSelect?.value || state.activeMode,
+        radiusValue: els.radiusInput?.value || String(state.activeRadiusKm),
+        locationSearchValue: els.locationSearch?.value || "",
+        locationLinkValue: els.locationLink?.value || "",
+        resultsCollapsed: pf2Frame.classList.contains("pf2-resultsCollapsed"),
+      },
+      pois: clonePoisForSave(state.pois),
+      selectedPoiId: state.selectedPoiId,
+      routes: getRouteSnapshot(),
+      drawings: serializeUserDrawings(),
+    };
+  }
+
+  function syncSavedControls() {
+    const maps = getSavedMaps();
+    const drawings = getSavedDrawings();
+    if (els.savedMapsSelect) {
+      els.savedMapsSelect.innerHTML = maps.length
+        ? maps.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || formatSavedDate(item.createdAt))}</option>`).join("")
+        : '<option value="">No saved maps</option>';
+      els.restoreMapBtn.disabled = maps.length === 0;
+    }
+    if (els.savedDrawingsSelect) {
+      els.savedDrawingsSelect.innerHTML = drawings.length
+        ? drawings.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || formatSavedDate(item.createdAt))}</option>`).join("")
+        : '<option value="">No saved drawings</option>';
+      els.restoreDrawingBtn.disabled = drawings.length === 0;
+    }
+  }
+
+  function ensureSaveRestoreUi() {
+    if (pf2Frame.querySelector(".pf2-savebar")) {
+      els.saveMapBtn = pf2Frame.querySelector("[data-pf2-save-map]");
+      els.restoreMapBtn = pf2Frame.querySelector("[data-pf2-restore-map]");
+      els.savedMapsSelect = pf2Frame.querySelector("[data-pf2-saved-maps]");
+      els.saveDrawingBtn = pf2Frame.querySelector("[data-pf2-save-drawing]");
+      els.restoreDrawingBtn = pf2Frame.querySelector("[data-pf2-restore-drawing]");
+      els.savedDrawingsSelect = pf2Frame.querySelector("[data-pf2-saved-drawings]");
+      els.drawToolButtons = Array.from(pf2Frame.querySelectorAll("[data-pf2-draw-mode]"));
+      els.drawFinishBtn = pf2Frame.querySelector("[data-pf2-draw-finish]");
+      syncSavedControls();
+      return;
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "pf2-savebar";
+    bar.innerHTML = `
+      <div class="pf2-savebar-group">
+        <button class="pf2-savebar-btn" type="button" data-pf2-save-map>Save Map</button>
+        <label class="pf2-savebar-selectWrap">
+          <span>Saved Maps</span>
+          <select class="pf2-savebar-select" data-pf2-saved-maps aria-label="Saved maps"></select>
+        </label>
+        <button class="pf2-savebar-btn" type="button" data-pf2-restore-map>Restore</button>
+      </div>
+      <div class="pf2-savebar-group">
+        <button class="pf2-savebar-btn" type="button" data-pf2-save-drawing>Save Drawing</button>
+        <label class="pf2-savebar-selectWrap">
+          <span>Saved Drawings</span>
+          <select class="pf2-savebar-select" data-pf2-saved-drawings aria-label="Saved drawings"></select>
+        </label>
+        <button class="pf2-savebar-btn" type="button" data-pf2-restore-drawing>Restore</button>
+      </div>
+      <div class="pf2-savebar-group pf2-savebar-group--draw" aria-label="Drawing tools">
+        <button class="pf2-savebar-btn" type="button" data-pf2-draw-mode="marker">Pin</button>
+        <button class="pf2-savebar-btn" type="button" data-pf2-draw-mode="polyline">Line</button>
+        <button class="pf2-savebar-btn" type="button" data-pf2-draw-mode="polygon">Polygon</button>
+        <button class="pf2-savebar-btn" type="button" data-pf2-draw-mode="circle">Circle</button>
+        <button class="pf2-savebar-btn" type="button" data-pf2-draw-mode="rectangle">Rect</button>
+        <button class="pf2-savebar-btn" type="button" data-pf2-draw-finish disabled>Finish</button>
+      </div>
+    `;
+
+    const tabs = byId("pf2Tabs");
+    if (tabs?.parentNode === pf2Frame) tabs.insertAdjacentElement("afterend", bar);
+    else pf2Frame.insertBefore(bar, pf2Frame.firstElementChild);
+
+    els.saveMapBtn = bar.querySelector("[data-pf2-save-map]");
+    els.restoreMapBtn = bar.querySelector("[data-pf2-restore-map]");
+    els.savedMapsSelect = bar.querySelector("[data-pf2-saved-maps]");
+    els.saveDrawingBtn = bar.querySelector("[data-pf2-save-drawing]");
+    els.restoreDrawingBtn = bar.querySelector("[data-pf2-restore-drawing]");
+    els.savedDrawingsSelect = bar.querySelector("[data-pf2-saved-drawings]");
+    els.drawToolButtons = Array.from(bar.querySelectorAll("[data-pf2-draw-mode]"));
+    els.drawFinishBtn = bar.querySelector("[data-pf2-draw-finish]");
+    syncSavedControls();
+  }
+
+  function saveCurrentMapState() {
+    if (!state.map) {
+      setStatus("Map is still loading.", "loading");
+      return;
+    }
+    const snapshot = captureMapState();
+    const name = `Map - ${snapshot.origin.label || formatSavedDate(snapshot.savedAt)} - ${formatSavedDate(snapshot.savedAt)}`;
+    const entry = { id: makeSavedId("map"), name, createdAt: snapshot.savedAt, state: snapshot };
+    const next = [entry, ...getSavedMaps().filter((item) => item.id !== entry.id)];
+    if (writeSavedCollection(savedMapsStorageKey, next)) {
+      syncSavedControls();
+      if (els.savedMapsSelect) els.savedMapsSelect.value = entry.id;
+      setStatus("Map saved.", "success");
+    }
+  }
+
+  function showDrawingNameDialog(defaultName = "Drawing") {
+    return new Promise((resolve) => {
+      const dialog = document.createElement("dialog");
+      dialog.className = "pf2-drawing-name-dialog";
+      dialog.innerHTML = `
+        <form method="dialog" class="pf2-drawing-name-card">
+          <h3>Save Drawing</h3>
+          <label>
+            <span>Drawing name</span>
+            <input type="text" name="drawingName" maxlength="80" autocomplete="off" required />
+          </label>
+          <div class="pf2-drawing-name-actions">
+            <button type="button" data-pf2-drawing-cancel>Cancel</button>
+            <button type="submit" data-pf2-drawing-save>Save</button>
+          </div>
+        </form>
+      `;
+      const input = dialog.querySelector("input[name='drawingName']");
+      const close = (value) => {
+        try { dialog.close(); } catch (_) { /* noop */ }
+        dialog.remove();
+        resolve(value);
+      };
+      dialog.querySelector("[data-pf2-drawing-cancel]")?.addEventListener("click", () => close(null));
+      dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        close(null);
+      });
+      dialog.querySelector("form")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const name = String(input?.value || "").trim();
+        if (!name) return;
+        close(name);
+      });
+      document.body.appendChild(dialog);
+      input.value = defaultName;
+      try { dialog.showModal(); } catch (_) { dialog.setAttribute("open", ""); }
+      requestAnimationFrame(() => {
+        input.focus();
+        input.select();
+      });
+    });
+  }
+
+  async function saveCurrentDrawingState() {
+    if (!state.map) {
+      setStatus("Map is still loading.", "loading");
+      return;
+    }
+    const drawings = serializeUserDrawings();
+    if (!drawings.length) {
+      setStatus("Draw something on the map before saving a drawing.", "empty");
+      return;
+    }
+    const name = await showDrawingNameDialog(`Drawing ${getSavedDrawings().length + 1}`);
+    if (!name) return;
+    const snapshot = captureMapState();
+    snapshot.drawings = drawings;
+    const entry = { id: makeSavedId("drawing-set"), name, createdAt: snapshot.savedAt, state: snapshot };
+    const next = [entry, ...getSavedDrawings().filter((item) => item.id !== entry.id)];
+    if (writeSavedCollection(savedDrawingsStorageKey, next)) {
+      syncSavedControls();
+      if (els.savedDrawingsSelect) els.savedDrawingsSelect.value = entry.id;
+      setStatus(`Drawing "${name}" saved.`, "success");
+    }
+  }
+
+  function restoreMapStateSnapshot(snapshot, label = "saved state") {
+    if (!state.map || !snapshot) {
+      setStatus("Map is still loading.", "loading");
+      return;
+    }
+    state.restoringSnapshot = true;
+    state.searchRequestId += 1;
+    state.routeRequestId += 1;
+
+    try {
+      const filters = snapshot.filters || {};
+      const controls = snapshot.controls || {};
+      const origin = snapshot.origin || {};
+
+      clearRoutes();
+      clearPoiMarkers();
+
+      state.activeCategory = filters.category || controls.categoryValue || state.activeCategory;
+      ensureSelectOption(els.categorySelect, state.activeCategory, filters.categoryLabel || state.activeCategory);
+      if (els.categorySelect) els.categorySelect.value = state.activeCategory;
+      populateBrandOptions();
+
+      state.activeBrand = filters.brand || controls.brandValue || "";
+      ensureSelectOption(els.brandSelect, state.activeBrand, state.activeBrand);
+      if (els.brandSelect) els.brandSelect.value = state.activeBrand;
+
+      state.activeMode = filters.travelMode || controls.modeValue || state.activeMode;
+      ensureSelectOption(els.modeSelect, state.activeMode, state.activeMode);
+      if (els.modeSelect) els.modeSelect.value = state.activeMode;
+
+      state.activeRadiusKm = clampRadiusKm(filters.radiusKm || controls.radiusValue || state.activeRadiusKm);
+      syncRadiusControl();
+
+      state.aiQuery = filters.aiQuery || null;
+      state.selectedPoiId = snapshot.selectedPoiId || null;
+      const originLat = Number(origin.lat);
+      const originLng = Number(origin.lng);
+      state.origin = {
+        lat: Number.isFinite(originLat) ? originLat : defaultLat,
+        lng: Number.isFinite(originLng) ? originLng : defaultLng,
+        label: origin.label || defaultLabel,
+      };
+
+      if (state.propertyMarker) {
+        if (typeof state.propertyMarker.setPosition === "function") {
+          state.propertyMarker.setPosition(getOriginLatLng());
+        } else {
+          state.propertyMarker.position = getOriginLatLng();
+        }
+      }
+      if (els.locationSearch) els.locationSearch.value = controls.locationSearchValue || state.origin.label;
+      if (els.locationLink) els.locationLink.value = controls.locationLinkValue || "";
+      if (els.locationReset) els.locationReset.style.display = isAtDefaultOrigin() ? "none" : "";
+
+      state.pois = clonePoisForSave(snapshot.pois);
+      renderPoiMarkers();
+      renderResults();
+      restoreRouteSnapshot(snapshot.routes);
+      restoreUserDrawings(snapshot.drawings);
+      pf2Frame.classList.toggle("pf2-resultsCollapsed", Boolean(controls.resultsCollapsed));
+      els.toggle?.setAttribute("aria-expanded", String(!pf2Frame.classList.contains("pf2-resultsCollapsed")));
+      applyMapCamera(snapshot.camera);
+
+      setStatus(`Restored ${label}.`, "success");
+      requestAnimationFrame(() => {
+        if (state.map && window.google?.maps) google.maps.event.trigger(state.map, "resize");
+        applyMapCamera(snapshot.camera);
+      });
+    } finally {
+      state.restoringSnapshot = false;
+    }
+  }
+
+  function restoreSelectedSavedMap() {
+    const id = els.savedMapsSelect?.value;
+    const entry = getSavedMaps().find((item) => item.id === id);
+    if (entry) restoreMapStateSnapshot(entry.state, entry.name || "saved map");
+  }
+
+  function restoreSelectedSavedDrawing() {
+    const id = els.savedDrawingsSelect?.value;
+    const entry = getSavedDrawings().find((item) => item.id === id);
+    if (entry) restoreMapStateSnapshot(entry.state, entry.name || "saved drawing");
+  }
+
+  function getDrawingOptions(overrides = {}) {
+    return {
+      map: state.map,
+      editable: true,
+      draggable: true,
+      strokeColor: "#7c3aed",
+      strokeOpacity: 0.85,
+      strokeWeight: 3,
+      fillColor: "#7c3aed",
+      fillOpacity: 0.18,
+      ...overrides,
+    };
+  }
+
+  function getPreviewDrawingOptions(overrides = {}) {
+    return getDrawingOptions({
+      editable: false,
+      draggable: false,
+      clickable: false,
+      strokeOpacity: 0.65,
+      fillOpacity: 0.12,
+      ...overrides,
+    });
+  }
+
+  function distanceMetersBetween(a, b) {
+    if (!a || !b) return 0;
+    const first = new google.maps.LatLng(a.lat, a.lng);
+    const second = new google.maps.LatLng(b.lat, b.lng);
+    const spherical = google.maps.geometry?.spherical;
+    if (typeof spherical?.computeDistanceBetween === "function") {
+      return spherical.computeDistanceBetween(first, second);
+    }
+    const toRad = (value) => value * Math.PI / 180;
+    const earthRadiusMeters = 6371000;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+    const h = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+    return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  }
+
+  function boundsFromTwoPoints(a, b) {
+    if (!a || !b) return null;
+    return {
+      north: Math.max(a.lat, b.lat),
+      east: Math.max(a.lng, b.lng),
+      south: Math.min(a.lat, b.lat),
+      west: Math.min(a.lng, b.lng),
+    };
+  }
+
+  function clearCustomDrawingPreview() {
+    const preview = state.customDrawingPreview;
+    if (typeof preview?.setMap === "function") preview.setMap(null);
+    state.customDrawingPreview = null;
+  }
+
+  function restoreMapDrawingInteraction() {
+    if (!state.map) return;
+    state.map.setOptions({
+      disableDoubleClickZoom: state.mapDoubleClickZoomWasDisabled,
+      draggableCursor: null,
+    });
+  }
+
+  function updateDrawToolUi() {
+    const activeMode = state.customDrawingMode;
+    (els.drawToolButtons || []).forEach((button) => {
+      const isActive = button.dataset.pf2DrawMode === activeMode;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
+    });
+    if (els.drawFinishBtn) {
+      els.drawFinishBtn.disabled = !activeMode || activeMode === "marker";
+    }
+  }
+
+  function cancelCustomDrawing(message) {
+    const hadActiveDrawing = Boolean(state.customDrawingMode || state.customDrawingPreview);
+    clearCustomDrawingPreview();
+    state.customDrawingMode = null;
+    state.customDrawingPoints = [];
+    if (hadActiveDrawing) restoreMapDrawingInteraction();
+    updateDrawToolUi();
+    if (message && hadActiveDrawing) setStatus(message, "empty");
+  }
+
+  function setCustomDrawingMode(mode) {
+    if (!state.map || !customDrawingModes.has(mode)) return;
+    if (state.customDrawingMode === mode) {
+      cancelCustomDrawing("Drawing canceled.");
+      return;
+    }
+    const wasDrawing = Boolean(state.customDrawingMode);
+    clearCustomDrawingPreview();
+    state.customDrawingMode = mode;
+    state.customDrawingPoints = [];
+    if (!wasDrawing) {
+      state.mapDoubleClickZoomWasDisabled = Boolean(state.map.get("disableDoubleClickZoom"));
+    }
+    state.map.setOptions({ disableDoubleClickZoom: true, draggableCursor: "crosshair" });
+    updateDrawToolUi();
+    const instructions = {
+      marker: "Click the map to add a pin.",
+      polyline: "Click points on the map to draw a line, then click Finish.",
+      polygon: "Click points on the map to draw a polygon, then click Finish.",
+      circle: "Click the center, then click the radius edge.",
+      rectangle: "Click one corner, then click the opposite corner.",
+    };
+    setStatus(instructions[mode] || "Click the map to draw.", "loading");
+  }
+
+  function ensurePreviewOverlay(type, seedPoint) {
+    if (state.customDrawingPreview) return state.customDrawingPreview;
+    if (type === "polyline") {
+      state.customDrawingPreview = new google.maps.Polyline(getPreviewDrawingOptions({ path: seedPoint ? [seedPoint] : [] }));
+    } else if (type === "polygon") {
+      state.customDrawingPreview = new google.maps.Polygon(getPreviewDrawingOptions({ paths: seedPoint ? [seedPoint] : [] }));
+    } else if (type === "circle" && seedPoint) {
+      state.customDrawingPreview = new google.maps.Circle(getPreviewDrawingOptions({ center: seedPoint, radius: 1 }));
+    } else if (type === "rectangle" && seedPoint) {
+      state.customDrawingPreview = new google.maps.Rectangle(getPreviewDrawingOptions({ bounds: boundsFromTwoPoints(seedPoint, seedPoint) }));
+    }
+    return state.customDrawingPreview;
+  }
+
+  function updateCustomDrawingPreview(pointerPoint = null) {
+    const mode = state.customDrawingMode;
+    const points = state.customDrawingPoints;
+    if (!state.map || !mode || !points.length) return;
+    if (mode === "polyline") {
+      const path = pointerPoint ? [...points, pointerPoint] : points;
+      ensurePreviewOverlay("polyline", points[0])?.setPath(path);
+      return;
+    }
+    if (mode === "polygon") {
+      const path = pointerPoint ? [...points, pointerPoint] : points;
+      ensurePreviewOverlay("polygon", points[0])?.setPath(path);
+      return;
+    }
+    if (mode === "circle") {
+      const center = points[0];
+      const edge = pointerPoint || points[1];
+      if (!center || !edge) return;
+      const preview = ensurePreviewOverlay("circle", center);
+      preview?.setCenter(center);
+      preview?.setRadius(Math.max(1, distanceMetersBetween(center, edge)));
+      return;
+    }
+    if (mode === "rectangle") {
+      const start = points[0];
+      const end = pointerPoint || points[1];
+      const bounds = boundsFromTwoPoints(start, end);
+      if (!bounds) return;
+      ensurePreviewOverlay("rectangle", start)?.setBounds(bounds);
+    }
+  }
+
+  function finishCustomDrawing() {
+    if (!state.map || !state.customDrawingMode) return;
+    const mode = state.customDrawingMode;
+    const points = state.customDrawingPoints.slice();
+    let overlay = null;
+
+    if (mode === "polyline" && points.length >= 2) {
+      overlay = new google.maps.Polyline(getDrawingOptions({ path: points }));
+    } else if (mode === "polygon" && points.length >= 3) {
+      overlay = new google.maps.Polygon(getDrawingOptions({ paths: points }));
+    } else if (mode === "circle") {
+      const center = points[0];
+      const radius = Number(state.customDrawingPreview?.getRadius?.()) ||
+        (points[1] ? distanceMetersBetween(center, points[1]) : 0);
+      if (center && radius > 0) overlay = new google.maps.Circle(getDrawingOptions({ center, radius }));
+    } else if (mode === "rectangle") {
+      const bounds = state.customDrawingPreview?.getBounds?.() ||
+        (points[0] && points[1] ? boundsFromTwoPoints(points[0], points[1]) : null);
+      if (bounds) overlay = new google.maps.Rectangle(getDrawingOptions({ bounds }));
+    }
+
+    if (!overlay) {
+      setStatus("Add more points before finishing this drawing.", "empty");
+      return;
+    }
+
+    registerUserDrawing(mode, overlay);
+    cancelCustomDrawing();
+    setStatus("Drawing added. Use Save Drawing to name and store it.", "success");
+  }
+
+  function handleCustomDrawingClick(event) {
+    if (!state.customDrawingMode) return;
+    event.domEvent?.preventDefault?.();
+    event.domEvent?.stopPropagation?.();
+    const point = latLngLiteralFromValue(event.latLng);
+    if (!point) return;
+    const mode = state.customDrawingMode;
+
+    if (mode === "marker") {
+      const marker = new google.maps.Marker({
+        map: state.map,
+        position: point,
+        draggable: true,
+        title: "Saved marker",
+      });
+      registerUserDrawing("marker", marker);
+      cancelCustomDrawing();
+      setStatus("Pin added. Use Save Drawing to name and store it.", "success");
+      return;
+    }
+
+    state.customDrawingPoints.push(point);
+    updateCustomDrawingPreview();
+    if ((mode === "circle" || mode === "rectangle") && state.customDrawingPoints.length >= 2) {
+      finishCustomDrawing();
+      return;
+    }
+    const pointCount = state.customDrawingPoints.length;
+    setStatus(`${pointCount} point${pointCount === 1 ? "" : "s"} added. Click Finish when the drawing is complete.`, "loading");
+  }
+
+  function handleCustomDrawingMouseMove(event) {
+    if (!state.customDrawingMode || !state.customDrawingPoints.length) return;
+    const point = latLngLiteralFromValue(event.latLng);
+    if (!point) return;
+    updateCustomDrawingPreview(point);
+  }
+
+  function initDrawingTools() {
+    if (!state.map || state.customDrawingListeners.length || !window.google?.maps) return;
+    state.customDrawingListeners = [
+      google.maps.event.addListener(state.map, "click", handleCustomDrawingClick),
+      google.maps.event.addListener(state.map, "mousemove", handleCustomDrawingMouseMove),
+      google.maps.event.addListener(state.map, "dblclick", (event) => {
+        if (!state.customDrawingMode || state.customDrawingMode === "marker") return;
+        event.domEvent?.preventDefault?.();
+        event.domEvent?.stopPropagation?.();
+        finishCustomDrawing();
+      }),
+    ];
+    updateDrawToolUi();
   }
 
   function formatDuration(seconds) {
@@ -2287,6 +3195,31 @@ function initProjectLocationFrame(project) {
   }
 
   function handleFrameClick(event) {
+    const drawModeButton = event.target.closest("[data-pf2-draw-mode]");
+    if (drawModeButton) {
+      setCustomDrawingMode(drawModeButton.dataset.pf2DrawMode);
+      return;
+    }
+    if (event.target.closest("[data-pf2-draw-finish]")) {
+      finishCustomDrawing();
+      return;
+    }
+    if (event.target.closest("[data-pf2-save-map]")) {
+      saveCurrentMapState();
+      return;
+    }
+    if (event.target.closest("[data-pf2-restore-map]")) {
+      restoreSelectedSavedMap();
+      return;
+    }
+    if (event.target.closest("[data-pf2-save-drawing]")) {
+      saveCurrentDrawingState();
+      return;
+    }
+    if (event.target.closest("[data-pf2-restore-drawing]")) {
+      restoreSelectedSavedDrawing();
+      return;
+    }
     if (event.target.closest("#pf2LocationLinkBtn")) {
       handleLocationLinkSubmit();
       return;
@@ -2338,6 +3271,11 @@ function initProjectLocationFrame(project) {
   }
 
   function handleFrameKeydown(event) {
+    if (event.key === "Escape" && state.customDrawingMode) {
+      event.preventDefault();
+      cancelCustomDrawing("Drawing canceled.");
+      return;
+    }
     if (event.key !== "Enter") return;
     if (event.target === els.locationLink) {
       event.preventDefault();
@@ -2347,6 +3285,7 @@ function initProjectLocationFrame(project) {
 
   els.status.setAttribute("role", "status");
   els.status.setAttribute("aria-live", "polite");
+  ensureSaveRestoreUi();
   syncRadiusControl();
   populateBrandOptions();
 
@@ -2373,6 +3312,7 @@ function initProjectLocationFrame(project) {
     state.directionsService = new google.maps.DirectionsService();
     state.distanceMatrixService = new google.maps.DistanceMatrixService();
     state.geocoder = new google.maps.Geocoder();
+    initDrawingTools();
     const AdvancedMarker = google.maps.marker?.AdvancedMarkerElement;
     const handleOriginMarkerDrag = (event) => {
       const pos = event?.latLng || state.propertyMarker?.position || state.propertyMarker?.getPosition?.();
